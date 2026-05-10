@@ -1,77 +1,18 @@
 import logging
 import requests
-import json
-import os
 from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters, ConversationHandler
 
-logging.basicConfig(level=logging.INFO)
-
-# ===== PERSISTENCE =====
-DATA_FILE = "smm_data.json"
-
-def save_data():
-    """সব ডেটা disk এ save করো — restart হলেও হারাবে না"""
-    try:
-        def fix_blocked(b):
-            out = {}
-            for k, v in b.items():
-                if v.get("until") == "permanent":
-                    out[str(k)] = {"until": "permanent"}
-                else:
-                    try:
-                        out[str(k)] = {"until": v["until"].isoformat()}
-                    except:
-                        pass
-            return out
-
-        data = {
-            "users":       {str(k): v for k, v in users.items()},
-            "orders":      {str(k): v for k, v in orders.items()},
-            "blocked":     fix_blocked(blocked),
-            "today_stats": today_stats,
-            "total_stats": total_stats,
-        }
-        tmp = DATA_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, DATA_FILE)
-    except Exception as e:
-        logging.error(f"save_data error: {e}")
-
-def load_data():
-    """Startup এ disk থেকে ডেটা load করো"""
-    global users, orders, blocked, today_stats, total_stats
-    if not os.path.exists(DATA_FILE):
-        return
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        users  = {int(k): v for k, v in data.get("users", {}).items()}
-        orders = {int(k): v for k, v in data.get("orders", {}).items()}
-        for k, v in data.get("blocked", {}).items():
-            uid = int(k)
-            if v.get("until") == "permanent":
-                blocked[uid] = {"until": "permanent"}
-            else:
-                try:
-                    blocked[uid] = {"until": datetime.fromisoformat(v["until"])}
-                except:
-                    pass
-        today_stats.update(data.get("today_stats", {}))
-        total_stats.update(data.get("total_stats", total_stats))
-        logging.info(f"✅ Data loaded: {len(users)} users, {len(orders)} orders")
-    except Exception as e:
-        logging.error(f"load_data error: {e}")
+logging.basicConfig(level=logging.WARNING)
 
 # ===== CONFIG =====
-BOT_TOKEN = "8652759001:AAHciYKNOamRiqq6RsMqoRqmMJ7zPKf7geY"
+BOT_TOKEN = "8652759001:AAG5OOqv2v5du8VocXi-MFw3KEROGz4840I"
 ADMIN_ID = 7974704580
 BOT_NAME = "FREE SERVICE SMM FATHER"
 OWNER = "@SW_WAFK"
 SUPPORT = "@SOPPORT_CLAW_BOT"
-API_KEY = "fe29a2d45e4ce8242de222144cf20e1a"
+API_KEY = "8652759001:AAHciYKNOamRiqq6RsMqoRqmMJ7zPKf7geY"
 API_URL = "https://peakerr.com/api/v2"
 CHANNEL_1 = "@SMM_SERVICES_BANGLADESH"
 CHANNEL_2 = "@jjSERVICE_SMM_FATHER"
@@ -229,7 +170,6 @@ def get_user(uid, u=None):
         users[uid] = {"balance": 0.0, "spent": 0.0, "orders": [],
                       "name": u.first_name if u else "User",
                       "username": f"@{u.username}" if u and u.username else "N/A"}
-        save_data()
     return users[uid]
 
 def is_blocked(uid):
@@ -261,7 +201,6 @@ def update_stats(rev, cost):
     total_stats["revenue"] += rev
     total_stats["cost"] += cost
     total_stats["profit"] += rev - cost
-    save_data()
 
 def main_kb():
     return ReplyKeyboardMarkup([
@@ -776,7 +715,6 @@ async def approve_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = get_user(uid)
     if action == "approve":
         u["balance"] += amount
-        save_data()
         txt = (query.message.caption or query.message.text or "") + f"\n\n✅ APPROVED — {amount:.0f} TK যোগ!"
         try:
             await query.message.edit_caption(txt)
@@ -1076,12 +1014,10 @@ async def block_days_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     if data == "blk_perm":
         blocked[uid] = {"until": "permanent"}
-        save_data()
         await query.message.reply_text(f"🚫 {uid} Permanently blocked!", reply_markup=admin_kb())
     else:
         days = int(data.replace("blk_",""))
         blocked[uid] = {"until": datetime.now() + timedelta(days=days)}
-        save_data()
         await query.message.reply_text(f"🚫 {uid} — {days} দিনের জন্য blocked!", reply_markup=admin_kb())
     try:
         await context.bot.send_message(uid, "🚫 আপনার একাউন্ট সাময়িকভাবে বন্ধ করা হয়েছে।\nসমস্যা হলে Support এ যোগাযোগ করুন।")
@@ -1157,7 +1093,6 @@ async def refund_amt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         uid = context.user_data.get("ref_uid")
         u = get_user(uid)
         u["balance"] += amount
-        save_data()
         await update.message.reply_text(
             f"✅ Refund সফল!\n👤 {u['name']} কে {amount:.0f} TK দেওয়া হয়েছে!\n💳 নতুন ব্যালেন্স: {u['balance']:.2f} TK",
             reply_markup=admin_kb()
@@ -1539,7 +1474,6 @@ async def fail_order_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 def main():
-    load_data()
     app = Application.builder().token(BOT_TOKEN).build()
 
     cancel_filter = filters.Regex("^❌ বাতিল করুন$")
