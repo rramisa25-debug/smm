@@ -1387,10 +1387,13 @@ async def voice_reply(update:Update, context:ContextTypes.DEFAULT_TYPE):
 # =========================
 def main():
     app = (
-        ApplicationBuilder()
-        .token(TOKEN)
-        .concurrent_updates(True)   # ✅ একসাথে সব user handle
-        .build()
+       ApplicationBuilder()
+    .token(TOKEN)
+    .connect_timeout(30)
+    .read_timeout(30)
+    .write_timeout(30)
+    .concurrent_updates(True)
+    .build()
     )
     app.add_handler(CommandHandler("start",      start))
     app.add_handler(CommandHandler("buy",        buy))
