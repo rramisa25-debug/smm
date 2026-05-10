@@ -1,14 +1,17 @@
 import subprocess
-import sys
-import os
+import threading
 
-print("Files:", os.listdir('.'))
+def run_claw():
+    subprocess.run(["python", "Claw_VIP_Final.py"])
 
-p1 = subprocess.Popen([sys.executable, "smm_bot_Final.py"])
-p2 = subprocess.Popen([sys.executable, "Claw_VIP_Final.py"])
+def run_smm():
+    subprocess.run(["python", "smm_bot_Final.py"])
 
-print("SMM Bot chalu!")
-print("Claw VIP Bot chalu!")
+t1 = threading.Thread(target=run_claw)
+t2 = threading.Thread(target=run_smm)
 
-p1.wait()
-p2.wait()
+t1.start()
+t2.start()
+
+t1.join()
+t2.join()
