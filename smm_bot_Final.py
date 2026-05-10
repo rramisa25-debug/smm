@@ -66,7 +66,7 @@ def load_data():
         logging.error(f"load_data error: {e}")
 
 # ===== CONFIG =====
-BOT_TOKEN = "8652759001:AAG5OOqv2v5du8VocXi-MFw3KEROGz4840I"
+BOT_TOKEN = "8652759001:AAHciYKNOamRiqq6RsMqoRqmMJ7zPKf7geY"
 ADMIN_ID = 7974704580
 BOT_NAME = "FREE SERVICE SMM FATHER"
 OWNER = "@SW_WAFK"
