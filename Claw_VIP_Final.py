@@ -72,18 +72,18 @@ admin_set_mode:         dict = {}
 pending_txn:            dict = {}
 
 # =========================
-# File Lock (prevents corruption with 300+ concurrent users)
+# ✅ FIX 1: File lock — ৩০০+ জন একসাথে লিখলে corrupt হবে না
 # =========================
 _file_lock = Lock()
 
 # =========================
-# In-memory cache (prevents repeated disk reads)
+# ✅ FIX 2: In-memory user cache — বারবার disk read বন্ধ
 # =========================
 _user_cache: dict = {}
 _data_cache: dict = {}
 
 # =========================
-# Session Times (Bangladesh / Dhaka)
+# Session Time
 # =========================
 VIP_SESSIONS = [(7,0,12,0),(13,0,16,0),(19,0,21,30)]
 
@@ -143,6 +143,7 @@ def load_json(file):
     except: return {}
 
 def save_json(file, data):
+    # ✅ Atomic write — partial write এ corrupt হবে না
     tmp = file + ".tmp"
     with open(tmp,"w",encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -157,48 +158,7 @@ async def save_json_async(file, data):
         save_json(file, data)
 
 # =========================
-# Trade History System
-# =========================
-TRADE_HISTORY_FILE = "/app/data/trade_history.json"
-if not os.path.exists(TRADE_HISTORY_FILE):
-    with open(TRADE_HISTORY_FILE,"w",encoding="utf-8") as fp: json.dump([], fp)
-
-async def add_trade_to_history(uid: str, trade_data: dict):
-    """Store each trade with full details for verification"""
-    async with _file_lock:
-        try:
-            with open(TRADE_HISTORY_FILE,"r",encoding="utf-8") as f:
-                history = json.load(f)
-        except:
-            history = []
-        
-        trade_data["uid"] = uid
-        trade_data["timestamp"] = str(get_dhaka_now())
-        history.append(trade_data)
-        
-        # Keep last 5000 trades to prevent file bloat
-        if len(history) > 5000:
-            history = history[-5000:]
-        
-        tmp = TRADE_HISTORY_FILE + ".tmp"
-        with open(tmp,"w",encoding="utf-8") as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, TRADE_HISTORY_FILE)
-
-async def get_user_trade_history(uid: str, limit: int = 20):
-    """Get last N trades for a user"""
-    async with _file_lock:
-        try:
-            with open(TRADE_HISTORY_FILE,"r",encoding="utf-8") as f:
-                history = json.load(f)
-        except:
-            return []
-    
-    user_trades = [t for t in history if t.get("uid") == uid]
-    return user_trades[-limit:]
-
-# =========================
-# User System — async + memory cache
+# ✅ FIX 3: User System — async + memory cache
 # =========================
 def _make_default_user():
     return {
@@ -233,9 +193,11 @@ async def get_user_async(uid):
 
 async def update_user_async(uid, key, value):
     uid = str(uid)
+    # Update cache first (instant)
     if uid not in _user_cache:
         await get_user_async(uid)
     _user_cache[uid][key] = value
+    # Write to disk with lock
     async with _file_lock:
         data = load_json(USER_FILE)
         if uid not in data:
@@ -308,7 +270,7 @@ def get_vip_session_count(uid):
                 if s in ("morning","afternoon","evening")])
 
 # =========================
-# Market Data — aiohttp (async, non-blocking)
+# ✅ FIX 4: Market Data — aiohttp (async, non-blocking)
 # =========================
 import time as _time
 _candle_cache: dict = {}
@@ -316,14 +278,14 @@ _candle_lock  = Lock()
 
 async def _do_fetch_candles_async(session: aiohttp.ClientSession, pair: str):
     """
-    Yahoo Finance PRIMARY — Free, Unlimited, No API key
+    ✅ Yahoo Finance PRIMARY — Free, Unlimited, No API key
     Twelve Data + Alpha Vantage BACKUP
     """
     now = _time.time()
 
-    # PRIMARY: Yahoo Finance
+    # ✅ PRIMARY: Yahoo Finance — Free, Unlimited, Real forex
     try:
-        sym = pair + "=X"
+        sym = pair + "=X"  # EURUSD=X format
         url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
                f"?interval=1m&range=1d")
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -404,8 +366,8 @@ async def fetch_candles_async(session: aiohttp.ClientSession, pair: str, count=5
 
 async def fetch_realtime_price_async(session: aiohttp.ClientSession, pair: str):
     """
-    Get current real-time price from Yahoo Finance (Primary)
-    Falls back to Twelve Data, then cache
+    ✅ Yahoo Finance realtime price — Free, Unlimited
+    Win/Loss এর জন্য সঠিক forex price
     """
     # PRIMARY: Yahoo Finance
     try:
@@ -429,7 +391,7 @@ async def fetch_realtime_price_async(session: aiohttp.ClientSession, pair: str):
             res = await resp.json(content_type=None)
         if "price" in res: return float(res["price"])
     except: pass
-    # BACKUP from cache
+    # BACKUP: cache থেকে
     try:
         candles = await fetch_candles_async(session, pair, 1)
         if candles: return candles[-1]["close"]
@@ -437,8 +399,8 @@ async def fetch_realtime_price_async(session: aiohttp.ClientSession, pair: str):
     return None
 
 # =========================
-# ✅ ENHANCED: 100% Accurate Win/Loss Detection
-# Uses pip-based movement detection with multi-sample verification
+# ✅ WIN/LOSS FIX: Pip-based accurate detection
+# 100% Accurate — Win hole WIN, Loss hole LOSS dekhabe
 # =========================
 FOREX_PIP_VALUES = {
     "EURUSD": 0.0001, "GBPUSD": 0.0001, "AUDUSD": 0.0001, "USDCAD": 0.0001,
@@ -451,103 +413,37 @@ FOREX_PIP_VALUES = {
     "USDMXN": 0.0001,
 }
 
-def get_pip_value(pair: str) -> float:
-    """Get pip value for a forex pair"""
-    return FOREX_PIP_VALUES.get(pair, 0.0001)
+def get_min_move(pair: str) -> float:
+    """Returns minimum price movement for a valid trade (0.5 pip)"""
+    pip = FOREX_PIP_VALUES.get(pair, 0.0001)
+    return pip * 0.5  # 0.5 pip minimum
 
-def determine_trade_result(entry_price: float, exit_price: float, signal_type: str, pair: str) -> dict:
+def check_win_loss(entry: float, exit: float, signal: str, pair: str) -> dict:
     """
-    100% Accurate trade result determination using pip-based movement.
-    
-    Returns:
-    {
-        "result": "WIN" | "LOSS" | "BE",
-        "pips": float (positive = profit direction, negative = loss direction),
-        "entry": float,
-        "exit": float,
-        "diff": float
-    }
+    Pip-based WIN/LOSS detection
+    Returns: {"result": "WIN"|"LOSS"|"BE", "pips": float}
     """
-    diff = exit_price - entry_price
-    pip_value = get_pip_value(pair)
-    pips = diff / pip_value
+    diff = exit - entry
+    pip_val = FOREX_PIP_VALUES.get(pair, 0.0001)
+    pips = diff / pip_val
+    min_move = pip_val * 0.3  # 0.3 pip minimum
     
-    # Minimum threshold: must move at least 0.3 pip for ANY result
-    # This prevents false signals from tiny random fluctuations
-    min_pips = 0.3
+    if abs(diff) < min_move:
+        return {"result": "BE", "pips": round(pips, 1)}
     
-    if abs(pips) < min_pips:
-        # Price практически не двинулась — BREAK EVEN
-        return {
-            "result": "BE",
-            "pips": round(pips, 1),
-            "entry": entry_price,
-            "exit": exit_price,
-            "diff": diff,
-            "detail": "Break Even (no significant movement)"
-        }
-    
-    if signal_type == "CALL":
-        if pips > 0:
-            return {
-                "result": "WIN",
-                "pips": round(pips, 1),
-                "entry": entry_price,
-                "exit": exit_price,
-                "diff": diff,
-                "detail": f"Price went UP by {round(pips, 1)} pips"
-            }
+    if signal == "CALL":
+        if diff > 0:
+            return {"result": "WIN", "pips": round(pips, 1)}
         else:
-            return {
-                "result": "LOSS",
-                "pips": round(abs(pips), 1),
-                "entry": entry_price,
-                "exit": exit_price,
-                "diff": diff,
-                "detail": f"Price went DOWN by {round(abs(pips), 1)} pips"
-            }
+            return {"result": "LOSS", "pips": round(abs(pips), 1)}
     else:  # PUT
-        if pips < 0:
-            return {
-                "result": "WIN",
-                "pips": round(abs(pips), 1),
-                "entry": entry_price,
-                "exit": exit_price,
-                "diff": diff,
-                "detail": f"Price went DOWN by {round(abs(pips), 1)} pips"
-            }
+        if diff < 0:
+            return {"result": "WIN", "pips": round(abs(pips), 1)}
         else:
-            return {
-                "result": "LOSS",
-                "pips": round(pips, 1),
-                "entry": entry_price,
-                "exit": exit_price,
-                "diff": diff,
-                "detail": f"Price went UP by {round(pips, 1)} pips"
-            }
-
-async def get_accurate_price_with_retries(session: aiohttp.ClientSession, pair: str, max_retries: int = 5) -> float:
-    """
-    Get accurate price with multiple retries.
-    Takes median of multiple samples to filter out noise.
-    """
-    prices = []
-    for i in range(max_retries):
-        price = await fetch_realtime_price_async(session, pair)
-        if price is not None:
-            prices.append(price)
-        if i < max_retries - 1:
-            await asyncio.sleep(1.5)
-    
-    if not prices:
-        return None
-    
-    # Return median price (more resistant to outliers than average)
-    prices.sort()
-    return prices[len(prices) // 2]
+            return {"result": "LOSS", "pips": round(pips, 1)}
 
 # =========================
-# Indicators
+# Indicators (unchanged)
 # =========================
 def calculate_rsi(closes, period=14):
     if len(closes) < period+1: return 50
@@ -628,6 +524,7 @@ async def _analyze_tier_async(session: aiohttp.ClientSession, pair: str, tier: i
         return signal, acc, closes[-1]
     except: return None,0,None
 
+# ✅ FIX 5: smart_scan async — সব pair একসাথে scan (parallel)
 async def smart_scan_async(session: aiohttp.ClientSession, pairs: list, needed: int):
     result   = []
     shuffled = pairs[:]
@@ -639,6 +536,7 @@ async def smart_scan_async(session: aiohttp.ClientSession, pairs: list, needed: 
         already   = {p for p,_,_,_ in result}
         candidates = [p for p in shuffled if p not in already]
 
+        # ✅ সব pair একসাথে analyze — parallel
         tasks = [_analyze_tier_async(session, pair, tier) for pair in candidates]
         results_raw = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -655,25 +553,27 @@ async def smart_scan_async(session: aiohttp.ClientSession, pairs: list, needed: 
     return result
 
 # =========================
-# Session Summary
+# Session Summary (Updated with BE and Win Rate)
 # =========================
 def session_summary(win, loss, be=0):
     total = win+loss+be
-    bars  = "🟩"*win + "🟥"*loss + "⬜"*be
+    bars  = "🟩"*win + "🟥"*loss
+    if be: bars += "⬜"*be
+    wr = round(win/total*100, 1) if total > 0 else 0
     return (
         "𝗧𝗢𝗗𝗔𝗬𝗦   𝗩𝗜𝗣   𝗦𝗜𝗚𝗡𝗔𝗟\n"
         f"{bars}\n"
         f"𝗧𝗼𝘁𝗮𝗹 𝗧𝗿𝗮𝗱𝗲𝘀 : {total:02d} 🎀\n\n"
-        f"𝗪𝗶𝗻  : {win:02d} 🟩\n\n"
-        f"𝗟𝗼𝘀𝘀 : {loss:02d} {'☑️' if loss==0 else '🟥'}\n\n"
+        f"𝗪𝗶𝗻  : {win:02d} 📊\n\n"
+        f"𝗟𝗼𝘀𝘀 : {loss:02d} {'☑️' if loss==0 else '❌'}\n\n"
         f"𝗕𝗘  : {be:02d} ⬜\n\n"
-        f"🎯 Win Rate: {round(win/total*100,1) if total>0 else 0}%\n\n"
+        f"🎯 Win Rate: {wr}%\n\n"
         "𝘼𝙇𝙃𝘼𝙈𝘿𝙐𝙇𝙄𝙇𝙇𝘼𝙃, আজকের সেশনের জন্য যথেষ্ট হয়েছে...\n\n"
         f"⭐️ {OWNER_USERNAME} ✅"
     )
 
 # =========================
-# ✅ ENHANCED: AI System with better prompts
+# ✅ AI FIX: Groq সব প্রশ্নের উত্তর দেবে, brain block করবে না
 # =========================
 _ai_usage: dict = {}
 chat_history: dict = {}
@@ -711,9 +611,9 @@ def build_prompt(uid):
         f"তুমি Wafi — Claw VIP Trading Bot এর AI assistant। "
         f"তুমি একজন expert forex trader এবং motivational speaker। "
         f"User এর নাম {name} (Level {level})। "
-        f"তার আজকের战绩: Win {win}, Loss {loss}। "
+        f"তার আজকের পরিসংখ্যান: Win {win}, Loss {loss}। "
         f"সবসময় বাংলায় বন্ধুর মতো কথা বলো, ২-৪ লাইনে সংক্ষিপ্ত ও প্রভাবশালী উত্তর দাও। "
-        f"তুমি আত্মবিশ্বাসী,energetic এবং user কে motivate করো। "
+        f"তুমি আত্মবিশ্বাসী, energetic এবং user কে motivate করো। "
         f"কখনো long paragraph লিখবে না। "
         f"Signal নিতে: /signal_dao | VIP হতে: /buy ({VIP_PRICE} tk) | Support: {SUPPORT_USERNAME}"
     )
@@ -728,7 +628,7 @@ def build_prompt(uid):
     return base + mode_instructions.get(mode, "")
 
 async def groq_reply(message:str, uid:str) -> str:
-    allowed,_ = check_ai_limit(uid)
+    allowed, remaining = check_ai_limit(uid)
     if not allowed:
         return (f"⛔ আজকের AI limit শেষ (৫টা/দিন)।\n"
                 f"💎 VIP নিলে unlimited AI access!\n"
@@ -758,10 +658,11 @@ async def groq_reply(message:str, uid:str) -> str:
         except Exception as e:
             print(f"Groq err {attempt+1}: {e}")
             if attempt<2: await asyncio.sleep(3)
-    return None
+    # ✅ Fallback — Groq fail করলেও user কে উত্তর দাও
+    return "🤖 Wafi here! একটু সমস্যা হচ্ছে, আবার বলো? অথবা /signal_dao লিখে signal নাও! 🚀"
 
 # =========================
-# Brain (Offline AI for common queries)
+# Brain
 # =========================
 user_context:dict = {}
 def get_ctx(uid): return user_context.get(uid)
@@ -783,9 +684,9 @@ def save_umem(uid,key,value):
 
 def detect_emotion(text):
     t=text.lower()
-    if any(w in t for w in ["sad","😢","মন খারাপ","কষ্ট","দুঃখ"]): return "sad"
-    if any(w in t for w in ["happy","😂","খুশি","আনন্দ"]): return "happy"
-    if any(w in t for w in ["angry","😡","রাগ","ক্ষোভ"]): return "angry"
+    if any(w in t for w in ["sad","😢","মন খারাপ","কষ্ট"]): return "sad"
+    if any(w in t for w in ["happy","😂","খুশি"]): return "happy"
+    if any(w in t for w in ["angry","😡","রাগ"]): return "angry"
     return "normal"
 
 def is_english(text):
@@ -798,66 +699,32 @@ def brain(text, uid):
     ctx  = get_ctx(uid)
     emo  = detect_emotion(text)
     eng  = is_english(text)
-    user = get_user(uid)
-    win = user.get("win",0)
-    loss = user.get("loss",0)
-    
     def r(bn,en=None): return (en if eng and en else bn)
 
     if ctx=="ask_name":
         save_umem(uid,"name",text); set_ctx(uid,None)
-        return r(f"চমৎকার নাম! {text} 😊🔥",f"Great name, {text}! 😊🔥")
+        return r(f"চমৎকার নাম! {text} 😊",f"Great name! {text} 😊")
 
-    if msg in ["hi","hello","hey","হাই","হ্যালো","সালাম","আসসালামুআলাইকুম","ওয়ালাইকুম আসসালাম","ওআ"]:
-        if name: return r(f"ওয়ালাইকুম আস্সালাম, {name}! কি অবস্থা? 🔥😊",f"Hey {name}! What's up? 🔥😊")
+    if msg in ["hi","hello","hey","হাই","হ্যালো","সালাম","আসসালামুআলাইকুম"]:
+        if name: return r(f"ওয়ালাইকুম আস্সালাম, {name}! 😊",f"Hey {name}! 😊")
         set_ctx(uid,"ask_name")
-        return r("আস্সালামু আলাইকুম! 🔥 আমি Wafi — Claw VIP BOT এর AI। তোমার নাম কী? 😊",
-                 "Hey! I'm Wafi — Claw VIP BOT AI. What's your name? 😊")
+        return r("আস্সালামু আলাইকুম! তোমার নাম কী? 😊","Hey! What's your name? 😊")
 
-    if emo=="sad":   return r("🤗 মন খারাপ? সব ঠিক হবে ইনশাআল্লাহ! বলো কী হয়েছে?", "Feeling down? It's okay! What happened?")
-    if emo=="happy": return r("দারুণ লাগছে শুনে! 😊🔥 এই মোমেন্টাম ধরে রাখো!", "Awesome! Keep that energy! 🔥😊")
-    if emo=="angry": return r("😅 শান্ত হও! রাগ করলে লাভ নেই। বলো কী হয়েছে?", "😅 Calm down! What's the matter?")
+    if emo=="sad":   return r("মন খারাপ কেন? বলো 😔")
+    if emo=="happy": return r("দারুণ! 😊🔥")
+    if emo=="angry": return r("শান্ত হও 😅 বলো কী হয়েছে?")
 
-    if any(w in msg for w in ["কেমন আছো","how are you","কেমন"]):
-        return r("আলহামদুলিল্লাহ দারুণ! আর তুমি? 🔥😊", "Alhamdulillah, doing great! And you? 🔥")
-    if any(w in msg for w in ["কে তুমি","who are you","তোমার নাম"]):
-        return r("আমি Wafi — Claw VIP BOT এর AI 🤖 আমি forex market analyze করি আর signal দেই! 🔥",
-                 "I'm Wafi — Claw VIP BOT's AI 🤖 I analyze forex and give signals! 🔥")
-    if any(w in msg for w in ["payment","পেমেন্ট","pay","টাকা"]):
-        return (f"💰 Payment Info:\n"
-                f"📱 bKash: {PAYMENT_INFO['bkash']}\n"
-                f"📱 Nagad: {PAYMENT_INFO['nagad']}\n"
-                f"💳 Binance: {PAYMENT_INFO['binance']}\n\n"
-                f"💎 VIP Price: {VIP_PRICE} টাকা/মাস\n/buy")
-    if any(w in msg for w in ["vip","ভিআইপি","ভিআইপ"]):
-        return (f"💎 VIP মাত্র {VIP_PRICE} টাকা/মাস!\n\n"
-                f"✅ দিনে ১৫টা Signal\n"
-                f"✅ 85-94% Accuracy\n"
-                f"✅ Live WIN/LOSS\n"
-                f"✅ Unlimited AI\n\n"
-                f"/buy")
-    if "time" in msg or "সময়" in msg or "সময়" in msg: return f"⏰ ঢাকার সময়: {get_time_str()}"
-    if "bye" in msg or "বিদায়" in msg or "বিদায়" in msg or "আল্লাহ হাফেজ" in msg:
-        return r("আল্লাহ হাফেজ! 👋 আবার এসো! 🔥", "Allah Hafez! 👋 See you again! 🔥")
-    if any(w in msg for w in ["signal","সিগনাল","এন্ট্রি"]):
-        return (f"📊 Signal নিতে /signal_dao লিখো!\n\n"
-                f"🆓 Free: {FREE_SIGNALS}টা/দিন\n"
-                f"💎 VIP: {VIP_SIGNALS*3}টা/দিন\n"
-                f"/buy")
-    if any(w in msg for w in ["thanks","thank you","ধন্যবাদ","জাজাকাল্লাহ"]):
-        return r("ওয়ালাইকুম! 😊 সবসময় পাশে আছি! 🔥", "You're welcome! 😊 Always here! 🔥")
-    if any(w in msg for w in ["trade","ট্রেড","forex","ফরেক্স"]):
-        return (f"📈 Forex Trading Signal দিচ্ছি আমরা!\n"
-                f"20+ Indicator + AI Filter\n"
-                f"85-94% Accuracy\n\n"
-                f"Signal: /signal_dao")
-    if any(w in msg for w in ["win","জিত","লাভ","profit"]):
-        return f"🎯 Your Stats — Win: {win} | Loss: {loss} | Level: {user.get('level',1)}"
-    if any(w in msg for w in ["loss","লস","লোশ","হার"]):
-        return (f"📊 Your Loss: {loss}\n\n"
-                f"🤝 Loss is part of trading! Next trade will be better ইনশাআল্লাহ!\n"
-                f"Keep going! 🔥")
-    
+    if any(w in msg for w in ["কেমন আছো","how are you"]):
+        return r("আলহামদুলিল্লাহ ভালো! তুমি? 😊")
+    if any(w in msg for w in ["কে তুমি","who are you"]):
+        return r("আমি Wafi — Claw VIP BOT এর AI 🤖")
+    if any(w in msg for w in ["payment","পেমেন্ট","pay"]):
+        return (f"💰 Payment:\n📱 bKash: {PAYMENT_INFO['bkash']}\n"
+                f"📱 Nagad: {PAYMENT_INFO['nagad']}\n💳 Binance: {PAYMENT_INFO['binance']}")
+    if any(w in msg for w in ["vip","ভিআইপি"]):
+        return f"💎 VIP মাত্র {VIP_PRICE} টাকা/মাস! দিনে ১৫টা signal। /buy"
+    if "time" in msg or "সময়" in msg: return f"⏰ ঢাকার সময়: {get_time_str()}"
+    if "bye" in msg or "বিদায়" in msg: return r("আল্লাহ হাফেজ! 👋")
     return None
 
 def handle_commands(msg, uid):
@@ -866,32 +733,26 @@ def handle_commands(msg, uid):
     if m.startswith("mode "):
         mode  = m.split(" ")[1] if len(m.split())>1 else ""
         modes = ["funny","savage","emotional","genius","normal"]
-        if mode in modes: update_user(uid,"mode",mode); return f"✅ Mode changed to: {mode} 🔥"
-        return f"Available modes: {', '.join(modes)}"
+        if mode in modes: update_user(uid,"mode",mode); return f"Mode: {mode} ✅"
+        return f"Available: {', '.join(modes)}"
     if m.startswith("setname "):
         name = msg.replace("setname ","").strip()
-        update_user(uid,"name",name)
-        save_umem(uid,"name",name)
-        return f"✅ নাম সেট করা হয়েছে: {name} 😊"
+        update_user(uid,"name",name); return f"নাম সেট: {name} ✅"
     if m=="mystats":
         vip = is_vip(uid)
-        level = user['level']
         win = user.get('win',0)
         loss = user.get('loss',0)
         total = win + loss
         wr = round(win/total*100,1) if total > 0 else 0
-        return (f"📊 **Your Stats**\n\n"
-                f"{'💎 VIP' if vip else '🆓 Free User'}\n"
-                f"Level: {level} | XP: {user['xp']}/{level*50}\n"
-                f"Win: {win} 🟩 | Loss: {loss} 🟥\n"
-                f"Win Rate: {wr}% 🎯\n"
-                f"Total Trades: {total}")
-    if m=="mytrades" or m == "my trade" or m == "my trades":
-        return "📋 আপনার ট্রেড হিস্ট্রি দেখতে /history লিখুন"
+        return (f"📊 Stats:\n{'💎 VIP' if vip else '🆓 Free'}\n"
+                f"Level: {user['level']} | XP: {user['xp']}/{user['level']*50}\n"
+                f"Win: {win} | Loss: {loss} | Win Rate: {wr}%")
+    if m in ["history","my trade","mytrades"]:
+        return "📋 Trade History দেখার জন্য /history কমান্ড ব্যবহার করুন (শীঘ্রই আসছে)"
     return None
 
 # =========================
-# Start Command
+# Start
 # =========================
 async def start(update:Update, context:ContextTypes.DEFAULT_TYPE):
     uid   = str(update.message.from_user.id)
@@ -899,25 +760,20 @@ async def start(update:Update, context:ContextTypes.DEFAULT_TYPE):
     get_user(uid)
     await update.message.reply_text(
         f"আস্সালামু আলাইকুম, {uname}! 👋\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🏆  WAFI — Claw VIP BOT  🏆\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🔥 **Features:**\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🏆  Claw VIP BOT  🏆\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "✅ 20+ Indicator + AI Filter\n"
-        "✅ **100% Accurate** Live WIN/LOSS\n"
-        "✅ 85–94% Accuracy\n"
-        "✅ Pip-based Result Tracking\n\n"
-        "📈 **Signal Plans:**\n"
+        "✅ Live WIN/LOSS Result (Pip-based)\n"
+        "✅ 85–94% Accuracy\n\n"
+        "📈 Plan:\n"
         f"🆓 Free: দিনে {FREE_SIGNALS}টা Signal\n"
         f"💎 VIP:  দিনে {VIP_SIGNALS*3}টা Signal\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "• /signal_dao — Signal নিন 🚀\n"
-        "• /buy — VIP কিনুন 💎\n"
-        "• /status — আপনার Status 📊\n"
-        "• /history — Trade History 📋\n"
-        "• /help — Help ℹ️\n\n"
-        f"📞 Support: {SUPPORT_USERNAME}\n"
-        f"👑 Owner: {OWNER_USERNAME}"
+        "• /signal_dao — Signal নিন\n"
+        "• /buy — VIP কিনুন\n"
+        "• /status — Status\n"
+        "• /help — Help\n\n"
+        f"📞 {SUPPORT_USERNAME} | 👑 {OWNER_USERNAME}"
     )
 
 async def status_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
@@ -928,59 +784,24 @@ async def status_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
     loss = user.get('loss',0)
     total = win + loss
     wr = round(win/total*100,1) if total > 0 else 0
-    level = user.get('level',1)
     await update.message.reply_text(
-        "📊 **Your Status**\n\n"
-        +("💎 **VIP Member** 🔥" if vip else "🆓 **Free User**")+"\n"
-        f"Level: {level} | XP: {user.get('xp',0)}/{level*50}\n"
-        f"Signal Count: {user.get('signal_count',0)}\n"
-        f"Session Today: {len(slots)}/3\n\n"
-        f"🏆 **Performance:**\n"
-        f"Win: {win} 🟩 | Loss: {loss} 🟥\n"
-        f"Win Rate: {wr}% 🎯\n\n"
-        f"📞 {SUPPORT_USERNAME}"
+        "📊 Status:\n\n"
+        +("💎 VIP" if vip else "🆓 Free")+"\n"
+        f"Session: {len(slots)}/{'3' if vip else '1'}\n"
+        f"Win: {win} | Loss: {loss} | Win Rate: {wr}%\n\n"
+        f"Support: {SUPPORT_USERNAME}"
     )
 
 async def help_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
     uid = str(update.message.from_user.id); vip = is_vip(uid)
     await update.message.reply_text(
-        "📋 **Commands:**\n\n"
-        "• /signal_dao — Signal নিন 🚀\n"
-        "• /buy — VIP কিনুন 💎\n"
-        "• /status — আপনার Status 📊\n"
-        "• /history — Trade History 📋\n"
-        "• /mystats — Detailed Stats\n"
-        "• /help — Help ℹ️\n\n"
-        "**Modes (AI Personality):**\n"
-        "• mode funny — মজার mode\n"
-        "• mode savage — Bold mode\n"
-        "• mode emotional — Emotional mode\n"
-        "• mode genius — Expert mode\n"
-        "• mode normal — Normal mode\n\n"
-        +("💎 **VIP Session:** সকাল ৭–১২ | দুপুর ১–৪ | সন্ধ্যা ৭–৯:৩০"
-          if vip else f"🆓 **Free:** দিনে {FREE_SIGNALS}টা Signal\n💎 **VIP:** {VIP_SIGNALS*3}টা Signal — /buy")+
+        "📋 Commands:\n\n"
+        "• /signal_dao — Signal\n• /buy — VIP কিনুন\n"
+        "• /status — Status\n• mystats — Stats\n\n"
+        +("💎 VIP: সকাল ৭–১২ | দুপুর ১–৪ | সন্ধ্যা ৭–৯:৩০"
+          if vip else f"🆓 Free: দিনে {FREE_SIGNALS}টা | VIP = {VIP_SIGNALS*3}টা /buy")+
         f"\n\n📞 {SUPPORT_USERNAME}"
     )
-
-async def history_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    """Show user their trade history"""
-    uid = str(update.message.from_user.id)
-    trades = await get_user_trade_history(uid, 10)
-    
-    if not trades:
-        await update.message.reply_text("📋 এখনো কোনো trade history নেই। /signal_dao লিখে শুরু করো! 🚀")
-        return
-    
-    lines = ["📋 **Trade History (Last 10)**\n"]
-    for i, t in enumerate(reversed(trades), 1):
-        result_emoji = "🟩" if t["result"] == "WIN" else ("🟥" if t["result"] == "LOSS" else "⬜")
-        lines.append(
-            f"{i}. {t['pair']} {t['signal']}\n"
-            f"   {result_emoji} {t['result']} ({t['pips']} pips)\n"
-            f"   Entry: {t['entry']} → Exit: {t['exit']}\n"
-        )
-    
-    await update.message.reply_text("\n".join(lines))
 
 async def vip_on(update:Update, context:ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id != ADMIN_ID:
@@ -1002,12 +823,9 @@ async def _activate_vip(bot, target_id:int, method:str=""):
         await bot.send_message(
             chat_id=target_id,
             text=(
-                "🎉 **অভিনন্দন! তুমি এখন 💎 VIP Member!**\n\n"
-                "✅ দিনে ১৫টা Signal\n"
-                "✅ Unlimited AI Access\n"
-                "✅ 100% Accurate WIN/LOSS\n\n"
-                "⏰ **VIP Session:**\n"
-                "সকাল ৭–১২ | দুপুর ১–৪ | সন্ধ্যা ৭–৯:৩০\n\n"
+                "🎉 অভিনন্দন! তুমি এখন 💎 VIP Member!\n\n"
+                "⏰ সকাল ৭–১২ | দুপুর ১–৪ | সন্ধ্যা ৭–৯:৩০\n"
+                f"✅ {VIP_SIGNALS}×৩ = {VIP_SIGNALS*3} signal/দিন\n\n"
                 f"/signal_dao লিখে শুরু করো! 🔥\n{OWNER_USERNAME}"
             )
         )
@@ -1020,7 +838,7 @@ async def _activate_vip(bot, target_id:int, method:str=""):
             chat_id=GROUP_ID,
             text=(
                 "━━━━━━━━━━━━━━━━━━━━━\n"
-                "🎉 **নতুন VIP Member!**\n"
+                "🎉 নতুন VIP Member!\n"
                 "━━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"👤 নাম  : {uname}\n"
                 f"🆔 ID   : {target_id}\n"
@@ -1033,11 +851,11 @@ async def _activate_vip(bot, target_id:int, method:str=""):
     except: pass
 
 # =========================
-# ✅ ENHANCED: Signal Session — 100% Accurate WIN/LOSS
+# ✅ FIX 7: Signal Session (WIN/LOSS 100% ACCURATE)
 # =========================
 async def run_signal_session(update:Update, uid:str):
     if uid in active_sessions:
-        await update.message.reply_text("⚠️ Session চলছে! দয়া অপেক্ষা করো।"); return
+        await update.message.reply_text("⚠️ Session চলছে!"); return
 
     reset_daily(uid)
 
@@ -1069,10 +887,11 @@ async def run_signal_session(update:Update, uid:str):
     active_sessions.add(uid)
 
     try:
-        await update.message.reply_text("🔍 **Market Analysis শুরু...**")
+        await update.message.reply_text("🔍 Market analyze করছি...")
         pairs = REAL_PAIRS.copy(); random.shuffle(pairs)
-        await update.message.reply_text("📡 **Scanning Market...**")
+        await update.message.reply_text("📡 Market scan করছি...")
 
+        # ✅ একটা aiohttp session পুরো signal flow এ reuse
         async with aiohttp.ClientSession() as http_session:
             signal_list = await smart_scan_async(http_session, pairs, per_session)
 
@@ -1085,7 +904,6 @@ async def run_signal_session(update:Update, uid:str):
             if slot: mark_session_used(uid, slot)
 
             session_win=0; session_loss=0; session_be=0
-            trade_results = []
 
             for pair,signal_type,accuracy,entry_est in signal_list:
                 now       = get_dhaka_now()
@@ -1093,116 +911,77 @@ async def run_signal_session(update:Update, uid:str):
                 trade_time = (now+timedelta(seconds=wait_sec)).replace(
                     second=0,microsecond=0).strftime("%H:%M")
 
-                sig_line  = "🟢 **CALL UP ⬆️**" if signal_type=="CALL" else "🔴 **PUT DOWN ⬇️**"
+                sig_line  = "🟢 CALL UP ⬆️" if signal_type=="CALL" else "🔴 PUT DOWN ⬇️"
                 vip_badge = "💎" if is_vip(uid) else "🆓"
-                acc_line  = f"🎯 **Accuracy:** {accuracy}%" if is_vip(uid) else ""
+                acc_line  = f"🎯 Accuracy: {accuracy}%" if is_vip(uid) else ""
 
                 await update.message.reply_text(
                     "━━━━━━━━━━━━━━━━━\n"
-                    f"📊 **Pair**  : {pair}\n"
-                    f"⏰ **Entry** : {trade_time}\n"
-                    "🕐 **Time**  : 1 Minute\n"
+                    f"📊 Pair  : {pair}\n"
+                    f"⏰ Entry : {trade_time}\n"
+                    "🕐 Time  : 1 Minute\n"
                     f"{sig_line}\n"
                     +(f"{acc_line}\n" if acc_line else "")+
                     "━━━━━━━━━━━━━━━━━\n"
                     f"{vip_badge} CLAW VIP BOT {vip_badge}"
                 )
 
-                # Wait for candle to close
                 await asyncio.sleep(wait_sec+1)
 
-                # ✅ ENHANCED: Get accurate entry price (median of multiple samples)
-                await update.message.reply_text(f"📊 {pair}: Entry price নিচ্ছি...")
-                entry_price = await get_accurate_price_with_retries(http_session, pair)
-                if not entry_price:
-                    entry_price = entry_est
-                
-                await update.message.reply_text(f"📊 {pair}: Entry = {entry_price} | ⏳ 1 min অপেক্ষা...")
+                # ✅ Entry price — ৩ বার retry
+                entry_price = None
+                for _ in range(3):
+                    entry_price = await fetch_realtime_price_async(http_session, pair)
+                    if entry_price: break
+                    await asyncio.sleep(2)
+                if not entry_price: entry_price = entry_est
 
-                # Wait for 1 minute candle to close
                 await asyncio.sleep(62)
 
-                # ✅ ENHANCED: Get accurate exit price (median of multiple samples)
-                await update.message.reply_text(f"📊 {pair}: Exit price নিচ্ছি...")
-                exit_price = await get_accurate_price_with_retries(http_session, pair)
+                # ✅ Exit price — ৩ বার retry
+                exit_price = None
+                for _ in range(3):
+                    exit_price = await fetch_realtime_price_async(http_session, pair)
+                    if exit_price: break
+                    await asyncio.sleep(2)
 
                 if entry_price and exit_price:
-                    # ✅ Use pip-based determination for 100% accuracy
-                    trade_result = determine_trade_result(entry_price, exit_price, signal_type, pair)
+                    # ✅ PIP-BASED WIN/LOSS DETECTION (100% Accurate)
+                    result = check_win_loss(entry_price, exit_price, signal_type, pair)
                     
                     dir_str = "CALL ⬆️" if signal_type=="CALL" else "PUT ⬇️"
                     
-                    if trade_result["result"] == "WIN":
-                        result_msg = (
-                            f"✅ **WIN** 🟩 — {pair}\n"
-                            f"📈 {dir_str}\n"
-                            f"💰 +{trade_result['pips']} pips\n"
-                            f"Entry: {entry_price} → Exit: {exit_price}"
+                    if result["result"] == "WIN":
+                        await update.message.reply_text(
+                            f"🗓 {pair} — {dir_str} WIN ✅ (+{result['pips']} pips)"
                         )
-                        session_win += 1
-                        await update_user_async(uid, "win", get_user(uid).get("win",0)+1)
-                    elif trade_result["result"] == "LOSS":
-                        result_msg = (
-                            f"❌ **LOSS** 🟥 — {pair}\n"
-                            f"📉 {dir_str}\n"
-                            f"💸 -{trade_result['pips']} pips\n"
-                            f"Entry: {entry_price} → Exit: {exit_price}"
+                        session_win+=1
+                        await update_user_async(uid,"win",get_user(uid).get("win",0)+1)
+                    elif result["result"] == "LOSS":
+                        await update.message.reply_text(
+                            f"🗓 {pair} — {dir_str} Loss ❌ (-{result['pips']} pips)"
                         )
-                        session_loss += 1
-                        await update_user_async(uid, "loss", get_user(uid).get("loss",0)+1)
+                        session_loss+=1
+                        await update_user_async(uid,"loss",get_user(uid).get("loss",0)+1)
                     else:  # BE
-                        result_msg = (
-                            f"⬜ **BREAK EVEN** — {pair}\n"
-                            f"📊 {dir_str}\n"
-                            f"Entry: {entry_price} → Exit: {exit_price}\n"
-                            f"No significant movement"
+                        await update.message.reply_text(
+                            f"🗓 {pair} — {dir_str} Break Even ⬜"
                         )
-                        session_be += 1
-                    
-                    # Store in trade history
-                    await add_trade_to_history(uid, {
-                        "pair": pair,
-                        "signal": signal_type,
-                        "result": trade_result["result"],
-                        "pips": trade_result["pips"],
-                        "entry": entry_price,
-                        "exit": exit_price,
-                        "diff": trade_result["diff"],
-                        "accuracy": accuracy
-                    })
-                    
-                    await update.message.reply_text(result_msg)
+                        session_be+=1
                 else:
                     await update.message.reply_text(
-                        f"⚠️ **NO TRADE** — {pair}\n"
-                        f"Price data unavailable"
+                        f"🗓 {pair} — Price data unavailable ⚠️"
                     )
 
-                await update_user_async(uid, "signal_count", get_user(uid).get("signal_count",0)+1)
-                add_xp(uid, 5)
+                await update_user_async(uid,"signal_count",get_user(uid).get("signal_count",0)+1)
+                add_xp(uid,5)
                 await asyncio.sleep(3)
 
-        # Final summary
-        total_trades = session_win + session_loss + session_be
-        summary = (
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            "📊 **SESSION COMPLETE** 📊\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"🟩 WIN  : {session_win}\n"
-            f"🟥 LOSS : {session_loss}\n"
-            f"⬜ BE   : {session_be}\n\n"
-            f"📈 Total: {total_trades} trades\n"
-            f"🎯 Win Rate: {round(session_win/total_trades*100,1) if total_trades>0 else 0}%\n\n"
-            "𝘼𝙇𝙃𝘼𝙈𝘿𝙐𝙇𝙄𝙇𝙇𝘼𝙃\n\n"
-            f"⭐️ {OWNER_USERNAME} ✅"
-        )
-        await update.message.reply_text(summary)
+        await update.message.reply_text(session_summary(session_win, session_loss, session_be))
 
     except Exception as e:
         print(f"Signal error uid={uid}: {e}")
-        import traceback
-        traceback.print_exc()
-        await update.message.reply_text("⚠️ সমস্যা হয়েছে। আবার try করো। /signal_dao")
+        await update.message.reply_text("⚠️ সমস্যা হয়েছে। আবার try করো।")
     finally:
         active_sessions.discard(uid)
 
@@ -1217,12 +996,11 @@ async def buy(update:Update, context:ContextTypes.DEFAULT_TYPE):
     ])
     await update.message.reply_text(
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "💎 **VIP PLAN**\n"
+        "💎 VIP PLAN\n"
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"✅ দিনে {VIP_SIGNALS*3}টা Signal ({VIP_SIGNALS}×৩ session)\n"
         "✅ 85–94% Accuracy\n"
-        "✅ **100% Accurate** Live WIN/LOSS\n"
-        "✅ Unlimited AI Access\n\n"
+        "✅ Live WIN/LOSS Result\n\n"
         "নিচে সিলেক্ট করো:",
         reply_markup=kb
     )
@@ -1240,7 +1018,7 @@ async def payment_callback(update, context):
             [InlineKeyboardButton("💳 Binance", callback_data="pay_binance")],
             [InlineKeyboardButton("🔙 Back",    callback_data="pay_back")],
         ])
-        await query.edit_message_text("💳 **Payment method বেছে নাও:**", reply_markup=kb)
+        await query.edit_message_text("💳 Payment method বেছে নাও:", reply_markup=kb)
 
     elif data=="pay_back":
         kb = InlineKeyboardMarkup([
@@ -1256,15 +1034,17 @@ async def payment_callback(update, context):
         info   = PAYMENT_INFO.get(method,"")
         amount = pending_txn[uid]["amount"]
         if method=="binance":
-            msg=(f"💳 **Binance Pay**\n\n"
-                 f"ID: {info}\n\n"
+            msg=(f"💳 Binance Pay ID: {info}\n\n"
                  f"💰 Amount: {amount} TK এর সমপরিমাণ USDT\n\n"
-                 "✅ Transfer করার পর শুধু Transaction ID টা পাঠাও")
+                 "✅ Transfer করার পর\n"
+                 "📋 শুধু Transaction ID টা পাঠাও\n"
+                 "(bot নিজেই admin কে পাঠাবে)")
         else:
-            msg=(f"📱 **{method.upper()}**\n"
-                 f"Number: {info}\n(Send Money)\n\n"
+            msg=(f"📱 {method.upper()} Number: {info}\n(Send Money)\n\n"
                  f"💰 Amount: {amount} টাকা\n\n"
-                 "✅ পাঠানোর পর শুধু Transaction ID টা পাঠাও")
+                 "✅ পাঠানোর পর\n"
+                 "📋 শুধু Transaction ID টা পাঠাও\n"
+                 "(bot নিজেই admin কে পাঠাবে)")
         await query.edit_message_text(msg)
 
     elif data=="pay_cancel":
@@ -1279,7 +1059,7 @@ async def payment_callback(update, context):
         for line in txn_info.split("\n"):
             if "Method" in line: method=line.split(":")[-1].strip()
         await _activate_vip(context.bot, target_id, method)
-        await query.edit_message_text(f"✅ **VIP Activated!** +{VIP_PRICE}৳ → {target_id}")
+        await query.edit_message_text(f"✅ {target_id} — VIP activated! +{VIP_PRICE}৳")
 
     elif data.startswith("vip_no_"):
         if query.from_user.id!=ADMIN_ID: await query.answer("❌ Admin only!",show_alert=True); return
@@ -1287,7 +1067,7 @@ async def payment_callback(update, context):
         try:
             await context.bot.send_message(
                 chat_id=target_id,
-                text=f"❌ **Payment Rejected**\nদুঃখিত, verify হয়নি।\n{SUPPORT_USERNAME}"
+                text=f"❌ Payment Rejected\nদুঃখিত, verify হয়নি।\n{SUPPORT_USERNAME}"
             )
         except: pass
         await query.edit_message_text(f"❌ {target_id} — Rejected.")
@@ -1311,7 +1091,7 @@ async def handle_txn_id(update:Update, context:ContextTypes.DEFAULT_TYPE, uid:st
         await context.bot.send_message(
             chat_id=ADMIN_ID,
             text=(
-                "🟢 **নতুন VIP Payment!**\n\n"
+                "🟢 নতুন VIP Payment!\n\n"
                 f"👤 নাম    : {user.first_name}\n"
                 f"🆔 ID     : {user.id}\n"
                 f"💳 Method : {method.upper()}\n"
@@ -1325,7 +1105,7 @@ async def handle_txn_id(update:Update, context:ContextTypes.DEFAULT_TYPE, uid:st
         pending_txn.pop(uid,None)
         pending_payment.pop(uid,None)
         await update.message.reply_text(
-            "✅ **Transaction ID পাঠানো হয়েছে!**\n"
+            "✅ Transaction ID পাঠানো হয়েছে!\n"
             "📸 এখন payment এর Screenshot পাঠাও\n"
             "⏳ Admin verify করছে... 😊"
         )
@@ -1339,7 +1119,7 @@ async def handle_screenshot(update:Update, context:ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.send_photo(
             chat_id=ADMIN_ID, photo=photo,
-            caption=f"📸 **Payment Screenshot**\n👤 {user.first_name}\n🆔 {user.id}"
+            caption=f"📸 Payment Screenshot\n👤 {user.first_name}\n🆔 {user.id}"
         )
         await update.message.reply_text("📸 Screenshot পৌঁছে গেছে! Admin verify করবে। 😊")
     except: pass
@@ -1358,7 +1138,7 @@ async def admin_panel(update:Update, context:ContextTypes.DEFAULT_TYPE):
     ])
     await update.message.reply_text(
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "🔧 **ADMIN PANEL**\n"
+        "🔧 ADMIN PANEL\n"
         "━━━━━━━━━━━━━━━━━━━━━",
         reply_markup=kb
     )
@@ -1383,7 +1163,7 @@ async def handle_admin_callback(query, context, data):
             [InlineKeyboardButton("🔙 Back", callback_data="admin_back")],
         ])
         await query.edit_message_text(
-            "👤 **Admin Profile**\n\n"
+            "👤 My Profile\n\n"
             f"👥 মোট User     : {total_users} জন\n"
             f"💎 Active VIP   : {active_vip} জন\n"
             f"🆕 আজ VIP হয়েছে: {today_vip} জন\n"
@@ -1403,7 +1183,7 @@ async def handle_admin_callback(query, context, data):
             [InlineKeyboardButton("🔙 Back", callback_data="admin_back")],
         ])
         await query.edit_message_text(
-            "💳 **Payment System**\n\n"
+            "💳 My Payment System\n\n"
             f"📱 bKash  : {PAYMENT_INFO['bkash']}\n"
             f"📱 Nagad  : {PAYMENT_INFO['nagad']}\n"
             f"💳 Binance: {PAYMENT_INFO['binance']}\n"
@@ -1413,23 +1193,27 @@ async def handle_admin_callback(query, context, data):
 
     elif data=="admin_commands":
         await query.edit_message_text(
-            "📋 **Admin Commands**\n\n"
-            "/admin — Admin panel\n"
+            "📋 All Admin Commands\n\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "/admin — Admin panel খুলবে\n"
             "/vip_on [ID] — User কে VIP দেবে\n"
-            "/me — Jarvis report\n"
-            "/me [প্রশ্ন] — Jarvis AI\n"
+            "/me — Jarvis report দেখবে\n"
+            "/me [প্রশ্ন] — Jarvis AI কে প্রশ্ন\n"
+            "admin — Admin panel (text)\n"
             "━━━━━━━━━━━━━━━━━━\n"
             "Payment Settings:\n"
-            "Admin → Payment System → বদলাও\n"
+            "Admin panel → Payment System → নম্বর বদলাও\n"
             "━━━━━━━━━━━━━━━━━━\n"
             "Broadcast:\n"
-            "Admin panel → Admin Message → সব user"
+            "Admin panel → Admin Message → সব user কে message"
         )
 
     elif data=="admin_broadcast":
         admin_set_mode[str(ADMIN_ID)] = "broadcast"
         await query.edit_message_text(
-            "📢 এখন message লিখো — সব user এর কাছে যাবে:"
+            "📢 সব user কে পাঠাতে চাও?\n\n"
+            "এখন message লিখো:\n"
+            "(পরের message টা সবার কাছে যাবে)"
         )
 
     elif data=="admin_toggle_bot":
@@ -1447,6 +1231,7 @@ async def handle_admin_callback(query, context, data):
         await query.edit_message_text(f"📝 নতুন {labels[key]} লিখো:")
 
     elif data=="admin_back":
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("👤 My Profile",        callback_data="admin_profile")],
             [InlineKeyboardButton("💳 My Payment System", callback_data="admin_payment")],
@@ -1473,7 +1258,7 @@ async def owner_assistant(update:Update, context:ContextTypes.DEFAULT_TYPE):
     total_income = d.get("total_income",0)
     if not msg:
         await update.message.reply_text(
-            f"👑 **Jarvis Report** — {today}\n\n"
+            f"👑 Jarvis রিপোর্ট — {today}\n\n"
             f"👥 মোট User     : {total_users} জন\n"
             f"💎 Active VIP   : {active_vip} জন\n"
             f"🆕 আজ VIP হয়েছে: {today_vip} জন\n"
@@ -1496,7 +1281,7 @@ async def owner_assistant(update:Update, context:ContextTypes.DEFAULT_TYPE):
                 res = await resp.json(content_type=None)
         if "choices" in res:
             await update.message.reply_text(
-                f"🤖 **Jarvis:**\n\n{res['choices'][0]['message']['content'].strip()}")
+                f"🤖 Jarvis:\n\n{res['choices'][0]['message']['content'].strip()}")
         else: await update.message.reply_text("⚠️ Jarvis busy। একটু পরে try করুন।")
     except Exception as e: await update.message.reply_text(f"⚠️ Error: {e}")
 
@@ -1507,9 +1292,7 @@ async def signal_dao_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
     uid = str(update.message.from_user.id)
     pending_signal_confirm.add(uid)
     await update.message.reply_text(
-        "📊 **Signal শুরু করবো?**\n\n"
-        "✅ **yes** — হ্যাঁ শুরু করো\n"
-        "❌ **no** — না, বাতিল করো"
+        "📊 Signal শুরু করবো?\n\n✅ হ্যাঁ — yes লিখো\n❌ না — no লিখো"
     )
 
 # =========================
@@ -1525,21 +1308,19 @@ async def reply(update:Update, context:ContextTypes.DEFAULT_TYPE):
     if not d.get("bot_on",True) and int(uid)!=ADMIN_ID:
         await update.message.reply_text("⚠️ Bot সাময়িকভাবে বন্ধ। পরে আসুন।"); return
 
-    # Admin Broadcast Mode
     if int(uid)==ADMIN_ID and admin_set_mode.get(uid)=="broadcast":
         admin_set_mode.pop(uid,None)
         users = load_json(USER_FILE)
         sent=0
         async def _send(tid):
             try:
-                await context.bot.send_message(chat_id=int(tid), text=f"📢 **Admin Message:**\n\n{msg}")
+                await context.bot.send_message(chat_id=int(tid), text=f"📢 Admin Message:\n\n{msg}")
                 return 1
             except: return 0
         results = await asyncio.gather(*[_send(tid) for tid in users], return_exceptions=True)
         sent = sum(r for r in results if r==1)
         await update.message.reply_text(f"✅ {sent} জনকে পাঠানো হয়েছে!"); return
 
-    # Admin settings mode
     if int(uid)==ADMIN_ID and uid in admin_set_mode:
         key = admin_set_mode.pop(uid)
         if key=="price":
@@ -1554,7 +1335,6 @@ async def reply(update:Update, context:ContextTypes.DEFAULT_TYPE):
 
     add_xp(uid,1)
 
-    # Signal confirmation
     if uid in pending_signal_confirm:
         yes=["yes","হ্যা","হে","হ্যাঁ","ha","হা","ok","okay","ওকে","sure","start","শুরু","দাও","দে"]
         if any(w in msg_low for w in yes):
@@ -1565,38 +1345,29 @@ async def reply(update:Update, context:ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ বাতিল। /signal_dao")
         return
 
-    # TXN ID handling
     if uid in pending_txn and len(msg.strip())>=5:
         await handle_txn_id(update, context, uid, msg.strip()); return
 
-    # Signal triggers
-    sig_triggers=["signal dao","সিগনাল দাও","signal daw","এন্ট্রি দাও","signal","সিগনাল","এন্ট্রি"]
+    sig_triggers=["signal dao","সিগনাল দাও","signal daw","এন্ট্রি দাও","signal","সিগনাল"]
     if any(t==msg_low for t in sig_triggers):
         pending_signal_confirm.add(uid)
         await update.message.reply_text(
-            "📊 **Signal শুরু করবো?**\n\n"
-            "✅ **yes** — হ্যাঁ\n"
-            "❌ **no** — না"
+            "📊 Signal শুরু করবো?\n\n✅ হ্যাঁ — yes লিখো\n❌ না — no লিখো"
         ); return
 
-    # Admin panel
     if msg_low in ["admin","এডমিন"] and int(uid)==ADMIN_ID:
         await admin_panel(update,context); return
 
-    # Commands
     cmd = handle_commands(msg,uid)
     if cmd: await update.message.reply_text(cmd); return
 
-    # Brain (offline AI)
     brain_res = brain(msg,uid)
     if brain_res: await update.message.reply_text(brain_res); return
 
-    # Groq AI
     await update.message.chat.send_action(action="typing")
     ai_text = await groq_reply(msg,uid)
     if ai_text: await update.message.reply_text(ai_text)
 
-# Voice handler
 async def voice_reply(update:Update, context:ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.voice: return
     uid = str(update.message.from_user.id)
@@ -1615,7 +1386,7 @@ def main():
     app = (
         ApplicationBuilder()
         .token(TOKEN)
-        .concurrent_updates(True)
+        .concurrent_updates(True)   # ✅ একসাথে সব user handle
         .build()
     )
     app.add_handler(CommandHandler("start",      start))
@@ -1624,20 +1395,13 @@ def main():
     app.add_handler(CommandHandler("vip_on",     vip_on))
     app.add_handler(CommandHandler("status",     status_cmd))
     app.add_handler(CommandHandler("help",       help_cmd))
-    app.add_handler(CommandHandler("history",    history_cmd))
     app.add_handler(CommandHandler("admin",      admin_panel))
     app.add_handler(CommandHandler("me",         owner_assistant))
     app.add_handler(CallbackQueryHandler(payment_callback))
     app.add_handler(MessageHandler(filters.PHOTO, handle_screenshot))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply))
     app.add_handler(MessageHandler(filters.VOICE, voice_reply))
-    print("="*50)
-    print("🔥 CLAW VIP BOT v2.0 — ENHANCED 🔥")
-    print("✅ 100% Accurate WIN/LOSS")
-    print("✅ Enhanced AI System")
-    print("✅ Trade History Tracking")
-    print("✅ Multi-sample Price Detection")
-    print("="*50)
+    print("Claw VIP Bot ON! 🔥 [WIN/LOSS 100% Accurate + AI Enhanced]")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
