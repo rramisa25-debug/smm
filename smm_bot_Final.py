@@ -1,18 +1,44 @@
 import logging
 import requests
+import json,os
 from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters, ConversationHandler
 
+os.makedirs("/app/data",exist_ok=True)
+_F="/app/data/smm_data.json"
+def _save():
+    try:
+        b={}
+        for k,v in blocked.items(): b[str(k)]={"until":"permanent"} if v.get("until")=="permanent" else {"until":v["until"].isoformat()}
+        with open(_F+".tmp","w",encoding="utf-8") as f: json.dump({"users":{str(k):v for k,v in users.items()},"orders":{str(k):v for k,v in orders.items()},"blocked":b,"today_stats":today_stats,"total_stats":total_stats},f,ensure_ascii=False)
+        os.replace(_F+".tmp",_F)
+    except: pass
+def _load():
+    global users,orders,blocked,today_stats,total_stats
+    if not os.path.exists(_F): return
+    try:
+        d=json.load(open(_F,encoding="utf-8"))
+        users={int(k):v for k,v in d.get("users",{}).items()}
+        orders={int(k):v for k,v in d.get("orders",{}).items()}
+        for k,v in d.get("blocked",{}).items():
+            uid=int(k)
+            if v.get("until")=="permanent": blocked[uid]={"until":"permanent"}
+            else:
+                try: blocked[uid]={"until":datetime.fromisoformat(v["until"])}
+                except: pass
+        today_stats.update(d.get("today_stats",{})); total_stats.update(d.get("total_stats",total_stats))
+    except: pass
+
 logging.basicConfig(level=logging.WARNING)
 
 # ===== CONFIG =====
-BOT_TOKEN = "8652759001:AAG5OOqv2v5du8VocXi-MFw3KEROGz4840I"
+BOT_TOKEN = "8652759001:AAHciYKNOamRiqq6RsMqoRqmMJ7zPKf7geY"
 ADMIN_ID = 7974704580
 BOT_NAME = "FREE SERVICE SMM FATHER"
 OWNER = "@SW_WAFK"
 SUPPORT = "@SOPPORT_CLAW_BOT"
-API_KEY = "8652759001:AAHciYKNOamRiqq6RsMqoRqmMJ7zPKf7geY"
+API_KEY = "fe29a2d45e4ce8242de222144cf20e1a"
 API_URL = "https://peakerr.com/api/v2"
 CHANNEL_1 = "@SMM_SERVICES_BANGLADESH"
 CHANNEL_2 = "@jjSERVICE_SMM_FATHER"
@@ -201,6 +227,7 @@ def update_stats(rev, cost):
     total_stats["revenue"] += rev
     total_stats["cost"] += cost
     total_stats["profit"] += rev - cost
+    _save()
 
 def main_kb():
     return ReplyKeyboardMarkup([
@@ -714,7 +741,7 @@ async def approve_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action, uid, amount = parts[0], int(parts[1]), float(parts[2])
     u = get_user(uid)
     if action == "approve":
-        u["balance"] += amount
+        u["balance"] += amount; _save()
         txt = (query.message.caption or query.message.text or "") + f"\n\n✅ APPROVED — {amount:.0f} TK যোগ!"
         try:
             await query.message.edit_caption(txt)
@@ -1092,7 +1119,7 @@ async def refund_amt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         amount = float(update.message.text)
         uid = context.user_data.get("ref_uid")
         u = get_user(uid)
-        u["balance"] += amount
+        u["balance"] += amount; _save()
         await update.message.reply_text(
             f"✅ Refund সফল!\n👤 {u['name']} কে {amount:.0f} TK দেওয়া হয়েছে!\n💳 নতুন ব্যালেন্স: {u['balance']:.2f} TK",
             reply_markup=admin_kb()
@@ -1448,7 +1475,7 @@ async def fail_order_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amount = float(parts[2])
     u = get_user(uid)
     if action == "failrefund":
-        u["balance"] += amount
+        u["balance"] += amount; _save()
         txt = (query.message.text or "") + f"\n\n✅ Refund দেওয়া হয়েছে — {amount:.2f} TK!"
         await query.message.edit_text(txt)
         try:
@@ -1474,6 +1501,7 @@ async def fail_order_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 def main():
+    _load()
     app = Application.builder().token(BOT_TOKEN).build()
 
     cancel_filter = filters.Regex("^❌ বাতিল করুন$")
