@@ -18,7 +18,7 @@ from telegram.ext import (
 # =========================
 # Config
 # =========================
-TOKEN    = "8741499786:AAFKFFPSl7Ffc8sAuDL9UaxR8tPdCNU5CQM"
+TOKEN    = "8741499786:AAEaFZSLW9OV5JOp_P9ZpkPcsXdxsnuOcE4"
 ADMIN_ID = 7974704580
 GROUP_ID = "@jjSERVICE_SMM_FATHER"
 
