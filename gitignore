@@ -1,0 +1,19 @@
+# Data files (bot restart করলে reset হবে না)
+data.json
+ultra_users.json
+*.tmp
+
+# User memory files
+user_*.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
