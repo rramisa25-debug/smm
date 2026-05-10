@@ -18,7 +18,7 @@ from telegram.ext import (
 # =========================
 # Config
 # =========================
-TOKEN    = "8741499786:AAEaFZSLW9OV5JOp_P9ZpkPcsXdxsnuOcE4"
+TOKEN    = "8741499786:AAFKFFPSl7Ffc8sAuDL9UaxR8tPdCNU5CQM"
 ADMIN_ID = 7974704580
 GROUP_ID = "@jjSERVICE_SMM_FATHER"
 
@@ -553,51 +553,30 @@ def add_history(uid,role,text):
 
 def build_prompt(uid):
     user = get_user(uid)
-    name = user.get("name", "বন্ধু")
-    mode = user.get("mode", "normal")
-    vip  = is_vip(uid)
-    win  = user.get("win", 0)
-    loss = user.get("loss", 0)
+    name = user.get("name","বন্ধু")
+    mode = user.get("mode","normal")
     base = (
         f"তুমি Wafi — Claw VIP Trading Bot এর AI assistant। "
-        f"User এর নাম {name}। তুমি তার বন্ধু। "
-        f"User {'💎 VIP Member' if vip else '🆓 Free User'}। "
-        f"আজকের Result: Win {win}টা, Loss {loss}টা। "
-        f"সবসময় বাংলায় কথা বলো, ২-৪ লাইনে সংক্ষিপ্ত উত্তর দাও। "
-        f"Signal এর জন্য বলো /signal_dao। VIP কিনতে /buy ({VIP_PRICE} tk)। Support: {SUPPORT_USERNAME}। "
-        f"Trading প্রশ্নে সহজ ভাষায় বোঝাও। "
-        f"হাসি-খুশি ও helpful থাকো। কখনো 'জানি না' বলবে না।"
+        f"User এর নাম {name}। বাংলায় বন্ধুর মতো কথা বলো, ২-৪ লাইনে সংক্ষিপ্ত। "
+        f"Signal: /signal_dao | VIP: /buy ({VIP_PRICE} tk) | Support: {SUPPORT_USERNAME}"
     )
-    modes = {
-        "funny":     " মজার ভাষায়, হাসি-ঠাট্টা করে বলো 😄",
-        "savage":    " Bold, direct ভাষায় বলো। ভনিতা না।",
-        "emotional": " আবেগ দিয়ে, মন থেকে বলো 💙",
-        "genius":    " Expert level এ technical ভাষায় বোঝাও।"
-    }
-    return base + modes.get(mode, "")
+    modes={"funny":" মজা করে বলো।","savage":" Bold ভাবে বলো।",
+           "emotional":" আবেগের সাথে বলো।","genius":" Expert level এ বলো।"}
+    return base+modes.get(mode,"")
 
 # ✅ FIX 6: groq_reply — aiohttp async (block করবে না)
-async def groq_reply(message: str, uid: str) -> str:
-    allowed, remaining = check_ai_limit(uid)
+async def groq_reply(message:str, uid:str) -> str:
+    allowed,_ = check_ai_limit(uid)
     if not allowed:
-        return (f"⛔ আজকের AI limit শেষ (৫টা/দিন)।\n"
-                f"💎 VIP নিলে unlimited AI!\n/buy")
-
-    fallback_responses = [
-        "বুঝতে পারলাম! 😊 আর কিছু জানতে চাও?",
-        "হ্যাঁ, ঠিকই বলেছো! Signal নিতে /signal_dao লিখো 🔥",
-        "ইন্টারেস্টিং প্রশ্ন! Support এ জানাও: " + SUPPORT_USERNAME,
-        "একটু পরে আবার জিজ্ঞেস করো, network busy আছে 😊",
-    ]
-
+        return f"⛔ আজকের AI limit শেষ (৫টা/দিন)।\n💎 VIP নিলে unlimited!\n/buy"
     for attempt in range(3):
         try:
             prompt   = build_prompt(uid)
-            messages = [{"role": "system", "content": prompt}]
-            messages.extend(chat_history.get(str(uid), [])[-6:])
-            messages.append({"role": "user", "content": message})
-            headers  = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
-            body     = {"model": GROQ_MODEL, "messages": messages, "max_tokens": 400, "temperature": 0.75}
+            messages = [{"role":"system","content":prompt}]
+            messages.extend(chat_history.get(str(uid),[])[-6:])
+            messages.append({"role":"user","content":message})
+            headers  = {"Authorization":f"Bearer {GROQ_KEY}","Content-Type":"application/json"}
+            body     = {"model":GROQ_MODEL,"messages":messages,"max_tokens":300,"temperature":0.75}
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     GROQ_URL, headers=headers, json=body,
@@ -606,20 +585,16 @@ async def groq_reply(message: str, uid: str) -> str:
                     res = await resp.json(content_type=None)
             if "choices" in res:
                 txt = res["choices"][0]["message"]["content"].strip()
-                add_history(str(uid), "user", message)
-                add_history(str(uid), "assistant", txt)
+                add_history(str(uid),"user",message)
+                add_history(str(uid),"assistant",txt)
                 use_ai_quota(uid)
                 return txt
             if "error" in res and ("rate" in str(res["error"]).lower() or "429" in str(res["error"])):
-                await asyncio.sleep(5)
-                continue
+                await asyncio.sleep(5); continue
         except Exception as e:
             print(f"Groq err {attempt+1}: {e}")
-            if attempt < 2:
-                await asyncio.sleep(3)
-
-    # সব retry শেষ — fallback
-    return random.choice(fallback_responses)
+            if attempt<2: await asyncio.sleep(3)
+    return None
 
 # =========================
 # Brain
@@ -659,74 +634,32 @@ def brain(text, uid):
     ctx  = get_ctx(uid)
     emo  = detect_emotion(text)
     eng  = is_english(text)
-    def r(bn, en=None): return (en if eng and en else bn)
+    def r(bn,en=None): return (en if eng and en else bn)
 
-    if ctx == "ask_name":
-        save_umem(uid, "name", text); set_ctx(uid, None)
-        return r(f"চমৎকার নাম! {text} 😊", f"Great name! {text} 😊")
+    if ctx=="ask_name":
+        save_umem(uid,"name",text); set_ctx(uid,None)
+        return r(f"চমৎকার নাম! {text} 😊",f"Great name! {text} 😊")
 
-    # সালাম / হাই
-    greetings = ["hi","hello","hey","হাই","হ্যালো","সালাম","আসসালামুআলাইকুম",
-                 "ওয়ালাইকুম","আস্সালামু","হেলো","হ্যালো","yo","sup"]
-    if any(msg == g or msg.startswith(g) for g in greetings):
-        if name: return r(f"ওয়ালাইকুম আস্সালাম, {name}! 😊 কেমন আছো?", f"Hey {name}! 😊 How are you?")
-        set_ctx(uid, "ask_name")
-        return r("আস্সালামু আলাইকুম! 😊 তোমার নাম কী?", "Hey! What's your name? 😊")
+    if msg in ["hi","hello","hey","হাই","হ্যালো","সালাম","আসসালামুআলাইকুম"]:
+        if name: return r(f"ওয়ালাইকুম আস্সালাম, {name}! 😊",f"Hey {name}! 😊")
+        set_ctx(uid,"ask_name")
+        return r("আস্সালামু আলাইকুম! তোমার নাম কী? 😊","Hey! What's your name? 😊")
 
-    if emo == "sad":   return r(f"মন খারাপ কেন{' ' + name if name else ''}? আমাকে বলো 😔 সব ঠিক হয়ে যাবে।")
-    if emo == "happy": return r(f"দারুণ! 😊🔥 {'আচ্ছা ' + name + ',' if name else ''} signal নেবে? /signal_dao")
-    if emo == "angry": return r("শান্ত হও 😅 কী হয়েছে বলো, সাহায্য করবো।")
+    if emo=="sad":   return r("মন খারাপ কেন? বলো 😔")
+    if emo=="happy": return r("দারুণ! 😊🔥")
+    if emo=="angry": return r("শান্ত হও 😅 বলো কী হয়েছে?")
 
-    # কেমন আছো
-    if any(w in msg for w in ["কেমন আছো","কেমন আছ","how are you","কি খবর","কিরে"]):
-        return r(f"আলহামদুলিল্লাহ ভালো! তুমি কেমন আছো{' ' + name if name else ''}? 😊")
-
-    # পরিচয়
-    if any(w in msg for w in ["কে তুমি","তুমি কে","who are you","তোমার নাম"]):
-        return r("আমি Wafi — Claw VIP BOT এর AI assistant 🤖\nSignal, trading, যেকোনো প্রশ্ন করতে পারো!")
-
-    # পেমেন্ট
-    if any(w in msg for w in ["payment","পেমেন্ট","pay","টাকা","bkash","nagad","বিকাশ","নগদ"]):
-        return (f"💰 Payment Info:\n"
-                f"📱 bKash: {PAYMENT_INFO['bkash']}\n"
-                f"📱 Nagad: {PAYMENT_INFO['nagad']}\n"
-                f"💳 Binance: {PAYMENT_INFO['binance']}\n\n"
-                f"VIP কিনতে /buy লিখো!")
-
-    # VIP
-    if any(w in msg for w in ["vip","ভিআইপি","vip কিনবো","vip নেবো"]):
-        return (f"💎 VIP মাত্র {VIP_PRICE} টাকা/মাস!\n"
-                f"✅ দিনে {VIP_SIGNALS*3}টা Signal\n"
-                f"✅ 85-94% Accuracy\n"
-                f"✅ Live WIN/LOSS Result\n\n"
-                f"/buy লিখে কিনো! 🔥")
-
-    # Signal
-    if any(w in msg for w in ["signal","সিগনাল","এন্ট্রি","ট্রেড"]):
-        return r(f"📊 Signal নিতে /signal_dao লিখো!\n{'💎 VIP এ ' + str(VIP_SIGNALS*3) + 'টা signal/দিন 🔥' if not is_vip(uid) else '💎 তোমার VIP signal রেডি!'}")
-
-    # সময়
-    if any(w in msg for w in ["time","সময়","কটা বাজে","এখন কয়টা"]):
-        return f"⏰ ঢাকার সময়: {get_time_str()}"
-
-    # ধন্যবাদ
-    if any(w in msg for w in ["ধন্যবাদ","thanks","thank you","থ্যাংকস","শুকরিয়া"]):
-        return r(f"আল্লাহর শুকর! 😊 {'আর কিছু লাগলে বলো ' + name if name else 'আর কিছু লাগলে বলো'}!")
-
-    # বিদায়
-    if any(w in msg for w in ["bye","বিদায়","আল্লাহ হাফেজ","ok bye","ঠিক আছে"]):
-        return r(f"আল্লাহ হাফেজ{' ' + name if name else ''}! 👋 ভালো থেকো!")
-
-    # Win/Loss জিজ্ঞেস
-    if any(w in msg for w in ["আজকে","result","রেজাল্ট","win","loss","জিতেছি","হেরেছি"]):
-        user = get_user(uid)
-        w = user.get("win", 0); l = user.get("loss", 0)
-        return f"📊 আজকের Result:\n✅ Win: {w}টা\n❌ Loss: {l}টা\n\nSignal নিতে /signal_dao লিখো! 🔥"
-
-    # Support
-    if any(w in msg for w in ["support","সাপোর্ট","সমস্যা","problem","হেল্প","help"]):
-        return f"📞 Support: {SUPPORT_USERNAME}\n👑 Owner: {OWNER_USERNAME}\n\nসরাসরি message করো!"
-
+    if any(w in msg for w in ["কেমন আছো","how are you"]):
+        return r("আলহামদুলিল্লাহ ভালো! তুমি? 😊")
+    if any(w in msg for w in ["কে তুমি","who are you"]):
+        return r("আমি Wafi — Claw VIP BOT এর AI 🤖")
+    if any(w in msg for w in ["payment","পেমেন্ট","pay"]):
+        return (f"💰 Payment:\n📱 bKash: {PAYMENT_INFO['bkash']}\n"
+                f"📱 Nagad: {PAYMENT_INFO['nagad']}\n💳 Binance: {PAYMENT_INFO['binance']}")
+    if any(w in msg for w in ["vip","ভিআইপি"]):
+        return f"💎 VIP মাত্র {VIP_PRICE} টাকা/মাস! দিনে ১৫টা signal। /buy"
+    if "time" in msg or "সময়" in msg: return f"⏰ ঢাকার সময়: {get_time_str()}"
+    if "bye" in msg or "বিদায়" in msg: return r("আল্লাহ হাফেজ! 👋")
     return None
 
 def handle_commands(msg, uid):
@@ -919,46 +852,33 @@ async def run_signal_session(update:Update, uid:str):
                     f"{vip_badge} CLAW VIP BOT {vip_badge}"
                 )
 
-                await asyncio.sleep(wait_sec + 2)
+                await asyncio.sleep(wait_sec+1)
 
-                # Entry price — ৩ বার চেষ্টা করো
                 entry_price = None
-                for attempt in range(5):
+                for _ in range(3):
                     entry_price = await fetch_realtime_price_async(http_session, pair)
-                    if entry_price:
-                        break
+                    if entry_price: break
                     await asyncio.sleep(2)
-                if not entry_price:
-                    entry_price = entry_est
+                if not entry_price: entry_price = entry_est
 
-                # ঠিক ১ মিনিট ক্যান্ডেল বন্ধ হওয়ার পরে exit price নাও
-                await asyncio.sleep(63)
+                await asyncio.sleep(62)
 
                 exit_price = None
-                for attempt in range(5):
+                for _ in range(3):
                     exit_price = await fetch_realtime_price_async(http_session, pair)
-                    if exit_price and exit_price != entry_price:
-                        break
-                    await asyncio.sleep(3)
+                    if exit_price: break
+                    await asyncio.sleep(2)
 
-                if entry_price and exit_price and entry_price != exit_price:
+                if entry_price and exit_price:
                     diff = exit_price - entry_price
                     if abs(diff) >= 0.000001:
-                        is_win = (diff > 0) if signal_type == "CALL" else (diff < 0)
+                        is_win = diff>0 if signal_type=="CALL" else diff<0
                     else:
-                        # tiny diff — আরেকটু wait করো
-                        await asyncio.sleep(8)
+                        await asyncio.sleep(10)
                         final = await fetch_realtime_price_async(http_session, pair)
-                        if final and final != entry_price:
-                            diff2 = final - entry_price
-                            is_win = (diff2 > 0) if signal_type == "CALL" else (diff2 < 0)
-                        else:
-                            is_win = None  # price পাওয়া গেলো না — skip
-                elif entry_price and exit_price and entry_price == exit_price:
-                    # একদম same price — neutral, skip
-                    is_win = None
+                        if final: diff2=final-entry_price; is_win=diff2>0 if signal_type=="CALL" else diff2<0
+                        else: is_win=False
                 else:
-                    # price একটাও পাওয়া গেলো না — False ধরো না, skip করো
                     is_win = None
 
                 if is_win is None: continue
@@ -1387,13 +1307,10 @@ async def voice_reply(update:Update, context:ContextTypes.DEFAULT_TYPE):
 # =========================
 def main():
     app = (
-       ApplicationBuilder()
-    .token(TOKEN)
-    .connect_timeout(30)
-    .read_timeout(30)
-    .write_timeout(30)
-    .concurrent_updates(True)
-    .build()
+        ApplicationBuilder()
+        .token(TOKEN)
+        .concurrent_updates(True)   # ✅ একসাথে সব user handle
+        .build()
     )
     app.add_handler(CommandHandler("start",      start))
     app.add_handler(CommandHandler("buy",        buy))
