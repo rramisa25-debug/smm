@@ -40,8 +40,9 @@ GROQ_KEY   = "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"
 GROQ_URL   = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
-DATA_FILE = "data.json"
-USER_FILE = "ultra_users.json"
+import os as _os; _os.makedirs("/app/data",exist_ok=True)
+DATA_FILE = "/app/data/data.json"
+USER_FILE = "/app/data/ultra_users.json"
 
 PAYMENT_INFO = {
     "bkash":   "01759852112",
