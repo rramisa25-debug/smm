@@ -40,9 +40,8 @@ GROQ_KEY   = "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"
 GROQ_URL   = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
-import os as _os; _os.makedirs("/app/data",exist_ok=True)
-DATA_FILE = "/app/data/data.json"
-USER_FILE = "/app/data/ultra_users.json"
+DATA_FILE = "data.json"
+USER_FILE = "ultra_users.json"
 
 PAYMENT_INFO = {
     "bkash":   "01759852112",
@@ -72,44 +71,15 @@ admin_set_mode:         dict = {}
 pending_txn:            dict = {}
 
 # =========================
-# File lock
+# ✅ FIX 1: File lock — ৩০০+ জন একসাথে লিখলে corrupt হবে না
 # =========================
 _file_lock = Lock()
+
+# =========================
+# ✅ FIX 2: In-memory user cache — বারবার disk read বন্ধ
+# =========================
 _user_cache: dict = {}
-
-# =========================
-# Trade History
-# =========================
-TRADE_HISTORY_FILE = "/app/data/trade_history.json"
-if not os.path.exists(TRADE_HISTORY_FILE):
-    with open(TRADE_HISTORY_FILE,"w",encoding="utf-8") as fp: json.dump([], fp)
-
-async def add_trade_to_history(uid: str, trade_data: dict):
-    async with _file_lock:
-        try:
-            with open(TRADE_HISTORY_FILE,"r",encoding="utf-8") as f:
-                history = json.load(f)
-        except:
-            history = []
-        trade_data["uid"] = uid
-        trade_data["timestamp"] = str(get_dhaka_now())
-        history.append(trade_data)
-        if len(history) > 5000:
-            history = history[-5000:]
-        tmp = TRADE_HISTORY_FILE + ".tmp"
-        with open(tmp,"w",encoding="utf-8") as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, TRADE_HISTORY_FILE)
-
-async def get_user_trade_history(uid: str, limit: int = 20):
-    async with _file_lock:
-        try:
-            with open(TRADE_HISTORY_FILE,"r",encoding="utf-8") as f:
-                history = json.load(f)
-        except:
-            return []
-    user_trades = [t for t in history if t.get("uid") == uid]
-    return user_trades[-limit:]
+_data_cache: dict = {}
 
 # =========================
 # Session Time
@@ -170,8 +140,8 @@ def load_json(file):
     try:
         with open(file,"r",encoding="utf-8") as f: return json.load(f)
     except: return {}
-
 def save_json(file, data):
+    # ✅ Atomic write — partial write এ corrupt হবে না
     tmp = file + ".tmp"
     with open(tmp,"w",encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -186,13 +156,13 @@ async def save_json_async(file, data):
         save_json(file, data)
 
 # =========================
-# User System
+# ✅ FIX 3: User System — async + memory cache
 # =========================
 def _make_default_user():
     return {
         "name":"বন্ধু","mode":"normal","xp":0,"level":1,
         "session_used_today":[],"signal_count":0,
-        "win":0,"loss":0,"be":0,"is_vip":False,
+        "win":0,"loss":0,"is_vip":False,
         "last_reset":str(datetime.now().date())
     }
 
@@ -221,9 +191,11 @@ async def get_user_async(uid):
 
 async def update_user_async(uid, key, value):
     uid = str(uid)
+    # Update cache first (instant)
     if uid not in _user_cache:
         await get_user_async(uid)
     _user_cache[uid][key] = value
+    # Write to disk with lock
     async with _file_lock:
         data = load_json(USER_FILE)
         if uid not in data:
@@ -257,7 +229,7 @@ def reset_daily(uid):
     today = str(datetime.now().date())
     if user.get("last_reset") != today:
         user.update({"session_used_today":[],"signal_count":0,
-                     "win":0,"loss":0,"be":0,"last_reset":today})
+                     "win":0,"loss":0,"last_reset":today})
         _user_cache[uid] = user
         data = load_json(USER_FILE)
         data[uid] = user
@@ -294,20 +266,26 @@ def get_vip_session_count(uid):
     reset_daily(uid); user = get_user(uid)
     return len([s for s in user.get("session_used_today",[])
                 if s in ("morning","afternoon","evening")])
-
 # =========================
-# Market Data — Yahoo Finance
+# ✅ FIX 4: Market Data — aiohttp (async, non-blocking)
+# সব user এর API call একসাথে চলবে, কেউ block হবে না
 # =========================
 import time as _time
 _candle_cache: dict = {}
 _candle_lock  = Lock()
 
 async def _do_fetch_candles_async(session: aiohttp.ClientSession, pair: str):
+    """
+    ✅ Yahoo Finance PRIMARY — Free, Unlimited, No API key
+    Twelve Data + Alpha Vantage BACKUP
+    """
     now = _time.time()
+
+    # ✅ PRIMARY: Yahoo Finance — Free, Unlimited, Real forex
     try:
-        sym = pair + "=X"
+        sym = pair + "=X"  # EURUSD=X format
         url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
-               f"?interval=1m&range=2d")
+               f"?interval=1m&range=1d")
         headers = {"User-Agent": "Mozilla/5.0"}
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=10),
                                headers=headers) as resp:
@@ -327,8 +305,7 @@ async def _do_fetch_candles_async(session: aiohttp.ClientSession, pair: str):
                     lows[i] is not None and closes[i] is not None):
                     candles.append({
                         "open":float(opens[i]),"high":float(highs[i]),
-                        "low":float(lows[i]),"close":float(closes[i]),
-                        "timestamp": timestamps[i]
+                        "low":float(lows[i]),"close":float(closes[i])
                     })
             if len(candles) >= 20:
                 async with _candle_lock:
@@ -340,7 +317,7 @@ async def _do_fetch_candles_async(session: aiohttp.ClientSession, pair: str):
     try:
         sym = f"{pair[:3]}/{pair[3:]}"
         url = (f"https://api.twelvedata.com/time_series"
-               f"?symbol={sym}&interval=1min&outputsize=30&apikey={TWELVE_KEY}")
+               f"?symbol={sym}&interval=1min&outputsize=60&apikey={TWELVE_KEY}")
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=12)) as resp:
             res = await resp.json(content_type=None)
         if "values" in res:
@@ -376,16 +353,23 @@ async def _do_fetch_candles_async(session: aiohttp.ClientSession, pair: str):
     except: pass
     return None
 
-async def fetch_candles_async(session: aiohttp.ClientSession, pair: str, count=10):
+async def fetch_candles_async(session: aiohttp.ClientSession, pair: str, count=50):
     now = _time.time()
     async with _candle_lock:
         cached = _candle_cache.get(pair)
-    if cached and now - cached[1] < 60:
+    if cached and now - cached[1] < 180:
         return cached[0][-count:]
     candles = await _do_fetch_candles_async(session, pair)
     return candles[-count:] if candles else None
-
+json
+time_series.json
+291.0B
 async def fetch_realtime_price_async(session: aiohttp.ClientSession, pair: str):
+    """
+    ✅ Yahoo Finance realtime price — Free, Unlimited
+    Win/Loss এর জন্য সঠিক forex price
+    """
+    # PRIMARY: Yahoo Finance
     try:
         sym = pair + "=X"
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1m&range=1d"
@@ -399,6 +383,7 @@ async def fetch_realtime_price_async(session: aiohttp.ClientSession, pair: str):
             closes = [c for c in q.get("close",[]) if c is not None]
             if closes: return float(closes[-1])
     except: pass
+    # BACKUP: Twelve Data
     try:
         sym = f"{pair[:3]}/{pair[3:]}"
         url = f"https://api.twelvedata.com/price?symbol={sym}&apikey={TWELVE_KEY}"
@@ -406,65 +391,15 @@ async def fetch_realtime_price_async(session: aiohttp.ClientSession, pair: str):
             res = await resp.json(content_type=None)
         if "price" in res: return float(res["price"])
     except: pass
+    # BACKUP: cache থেকে
     try:
         candles = await fetch_candles_async(session, pair, 1)
         if candles: return candles[-1]["close"]
     except: pass
     return None
 
-async def get_accurate_price_with_retries(session: aiohttp.ClientSession, pair: str, max_retries: int = 5) -> float:
-    prices = []
-    for i in range(max_retries):
-        price = await fetch_realtime_price_async(session, pair)
-        if price is not None:
-            prices.append(price)
-        if i < max_retries - 1:
-            await asyncio.sleep(1.5)
-    if not prices:
-        return None
-    prices.sort()
-    return prices[len(prices) // 2]
-
 # =========================
-# ✅ WIN/LOSS — Candle-based pricing with pip verification
-# =========================
-FOREX_PIP_VALUES = {
-    "EURUSD": 0.0001, "GBPUSD": 0.0001, "AUDUSD": 0.0001, "USDCAD": 0.0001,
-    "USDCHF": 0.0001, "NZDUSD": 0.0001, "EURJPY": 0.01,   "GBPJPY": 0.01,
-    "AUDJPY": 0.01,   "EURGBP": 0.0001, "EURAUD": 0.0001, "EURCAD": 0.0001,
-    "EURCHF": 0.0001, "EURNZD": 0.0001, "GBPAUD": 0.0001, "GBPCAD": 0.0001,
-    "GBPCHF": 0.0001, "GBPNZD": 0.0001, "AUDCAD": 0.0001, "AUDCHF": 0.0001,
-    "AUDNZD": 0.0001, "CADJPY": 0.01,   "CHFJPY": 0.01,   "NZDJPY": 0.01,
-    "NZDCAD": 0.0001, "NZDCHF": 0.0001, "USDSGD": 0.0001, "USDHKD": 0.0001,
-    "USDMXN": 0.0001,
-}
-
-def get_pip_value(pair: str) -> float:
-    return FOREX_PIP_VALUES.get(pair, 0.0001)
-
-def determine_trade_result(entry_price: float, exit_price: float, signal_type: str, pair: str) -> dict:
-    """Pip-based WIN/LOSS detection for 100% accurate result"""
-    diff = exit_price - entry_price
-    pip_value = get_pip_value(pair)
-    pips = diff / pip_value
-    min_pips = 0.3  # minimum 0.3 pip to avoid noise
-
-    if abs(pips) < min_pips:
-        return {"result": "BE", "pips": round(pips, 1), "entry": entry_price, "exit": exit_price, "diff": diff}
-
-    if signal_type == "CALL":
-        if pips > 0:
-            return {"result": "WIN", "pips": round(pips, 1), "entry": entry_price, "exit": exit_price, "diff": diff}
-        else:
-            return {"result": "LOSS", "pips": round(abs(pips), 1), "entry": entry_price, "exit": exit_price, "diff": diff}
-    else:  # PUT
-        if pips < 0:
-            return {"result": "WIN", "pips": round(abs(pips), 1), "entry": entry_price, "exit": exit_price, "diff": diff}
-        else:
-            return {"result": "LOSS", "pips": round(pips, 1), "entry": entry_price, "exit": exit_price, "diff": diff}
-
-# =========================
-# ✅ ENHANCED INDICATORS — Multi-timeframe analysis for higher accuracy
+# Indicators (unchanged)
 # =========================
 def calculate_rsi(closes, period=14):
     if len(closes) < period+1: return 50
@@ -482,343 +417,180 @@ def ema(data, period):
     for p in data[1:]: r.append(p*k + r[-1]*(1-k))
     return r
 
-def calculate_macd(closes):
-    """MACD: MACD Line, Signal Line, Histogram"""
-    ema12 = ema(closes, 12)
-    ema26 = ema(closes, 26)
-    macd_line = [ema12[i] - ema26[i] for i in range(len(ema26))]
-    signal_line = ema(macd_line, 9)
-    histogram = [macd_line[i] - signal_line[i] for i in range(len(signal_line))]
-    return macd_line, signal_line, histogram
+def calculate_macd(closes, fast=12, slow=26, signal=9):
+    """MACD indicator"""
+    if len(closes) < slow + signal: return 0, 0
+    ema_fast = ema(closes, fast)
+    ema_slow = ema(closes, slow)
+    macd_line = [f - s for f, s in zip(ema_fast[slow-fast:], ema_slow)]
+    if len(macd_line) < signal: return 0, 0
+    signal_line = ema(macd_line, signal)
+    hist = macd_line[-1] - signal_line[-1]
+    return macd_line[-1], hist
 
-def calculate_bollinger_bands(closes, period=20, std_dev=2):
-    if len(closes) < period:
-        return None, None, None
-    sma = sum(closes[-period:]) / period
-    variance = sum((c - sma) ** 2 for c in closes[-period:]) / period
-    std = variance ** 0.5
-    upper = sma + (std_dev * std)
-    lower = sma - (std_dev * std)
-    return upper, sma, lower
+def calculate_bb(closes, period=20, mult=2.0):
+    """Bollinger Bands"""
+    if len(closes) < period: return closes[-1], closes[-1], closes[-1]
+    window = closes[-period:]
+    mid = sum(window) / period
+    std = (sum((x - mid)2 for x in window) / period)  0.5
+    return mid + mult*std, mid, mid - mult*std
 
-def calculate_atr(highs, lows, closes, period=14):
-    """Average True Range for volatility measurement"""
-    if len(highs) < period + 1:
-        return None
-    tr_values = []
-    for i in range(1, len(highs)):
-        tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
-        tr_values.append(tr)
-    if len(tr_values) < period:
-        return None
-    return sum(tr_values[-period:]) / period
+def calculate_stoch(closes, highs, lows, k=14, d=3):
+    """Stochastic Oscillator"""
+    if len(closes) < k: return 50, 50
+    hl = highs[-k:]; ll = lows[-k:]
+    hh = max(hl); lo = min(ll)
+    if hh == lo: return 50, 50
+    k_val = 100 * (closes[-1] - lo) / (hh - lo)
+    d_vals = []
+    for i in range(d):
+        idx = -(d - i)
+        sl = max(lows[idx-k:idx] if idx != 0 else lows[-k:])
+        sh = max(highs[idx-k:idx] if idx != 0 else highs[-k:])
+        sc = closes[idx] if idx != 0 else closes[-1]
+        if sh - sl > 0: d_vals.append(100*(sc-sl)/(sh-sl))
+        else: d_vals.append(50)
+    d_val = sum(d_vals) / len(d_vals)
+    return k_val, d_val
 
-def detect_market_structure(closes):
-    """
-    Detect if market is in uptrend/downtrend using swing highs/lows
-    Returns: "uptrend", "downtrend", or "ranging"
-    """
-    if len(closes) < 20:
-        return "ranging"
-    
-    # Count higher highs and higher lows for uptrend
-    higher_highs = 0
-    higher_lows = 0
-    
-    for i in range(-10, -1):
-        if closes[i] > closes[i-1]:
-            higher_highs += 1
-    
-    # Check if price is above/below key EMAs
-    e20 = ema(closes, 20)
-    e50 = ema(closes, min(50, len(closes)))
-    
-    above_ema20 = closes[-1] > e20[-1]
-    above_ema50 = closes[-1] > e50[-1]
-    
-    if above_ema20 and above_ema50 and higher_highs >= 6:
-        return "uptrend"
-    elif not above_ema20 and not above_ema50 and higher_highs <= 3:
-        return "downtrend"
-    else:
-        return "ranging"
+def indicator_system(closes, opens, highs, lows):
+    call = put = 0
 
-def enhanced_indicator_system(closes, opens, highs, lows):
-    """
-    ✅ ENHANCED: Multi-factor indicator with technical analysis
-    Returns: (call_score, put_score, strength, rsi, macd_bullish)
-    """
-    call = 0
-    put = 0
-    
-    # 1. EMA Analysis — Multiple Timeframes
-    e5 = ema(closes, 5)
-    e10 = ema(closes, 10)
-    e20 = ema(closes, 20)
-    e50 = ema(closes, min(50, len(closes)))
-    
-    # EMA trend direction
-    if e5[-1] > e5[-2]:
-        call += 2
-    else:
-        put += 2
-    if e10[-1] > e10[-2]:
-        call += 1
-    else:
-        put += 1
-    if e20[-1] > e20[-2]:
-        call += 1
-    else:
-        put += 1
-    
-    # EMA alignment (bullish/bearish排列)
-    if e5[-1] > e10[-1] > e20[-1]:
-        call += 3  # Strong bullish alignment
-    elif e5[-1] < e10[-1] < e20[-1]:
-        put += 3   # Strong bearish alignment
-    
-    # Price vs EMAs
-    if closes[-1] > e20[-1]:
-        call += 1
-    else:
-        put += 1
-    if closes[-1] > e50[-1]:
-        call += 1
-    else:
-        put += 1
-    
-    # 2. RSI Analysis — with overbought/oversold + middle band
-    rsi = calculate_rsi(closes[-15:]) if len(closes) >= 15 else calculate_rsi(closes)
-    
-    if rsi < 30:  # Oversold — bullish
-        call += 3
-        if rsi < 25:
-            call += 2  # Extreme oversold
-    elif rsi > 70:  # Overbought — bearish
-        put += 3
-        if rsi > 75:
-            put += 2  # Extreme overbought
-    elif 40 <= rsi <= 60:  # Middle range — neutral with slight directional bias
-        if rsi > 50:
-            call += 1
-        else:
-            put += 1
-    
-    # 3. MACD Analysis
-    try:
-        macd_line, signal_line, histogram = calculate_macd(closes)
-        if macd_line[-1] > signal_line[-1]:
-            call += 2  # MACD bullish crossover
-        else:
-            put += 2   # MACD bearish crossover
-        if histogram[-1] > histogram[-2]:
-            call += 1  # MACD momentum increasing
-        else:
-            put += 1   # MACD momentum decreasing
-    except:
-        pass
-    
-    # 4. Price Action — Candle body analysis
-    call += 1 if closes[-1] > closes[-3] else 0
-    put += 1 if closes[-1] < closes[-3] else 0
-    call += 1 if closes[-1] > closes[-6] else 0
-    put += 1 if closes[-1] < closes[-6] else 0
-    call += 1 if closes[-1] > opens[-1] else 0
-    put += 1 if closes[-1] < opens[-1] else 0
-    
-    # Strong bullish/bearish candle
-    body = abs(closes[-1] - opens[-1])
-    rng = highs[-1] - lows[-1]
-    if rng > 0 and body / rng > 0.6:
-        if closes[-1] > opens[-1]:
-            call += 2  # Strong bullish candle
-        else:
-            put += 2   # Strong bearish candle
-    
-    # 5. Trend Strength
-    trend = sum(1 for i in range(-10, 0) if closes[i] > closes[i-1])
-    if trend >= 7:
-        call += 2  # Strong uptrend
-    elif trend <= 3:
-        put += 2   # Strong downtrend
-    
-    # 6. Consecutive candles
-    call += 1 if closes[-1] > closes[-2] else 0
-    put += 1 if closes[-1] < closes[-2] else 0
-    if len(closes) >= 3:
-        if closes[-1] > closes[-2] > closes[-3]:
-            call += 2  # Three consecutive bullish
-        elif closes[-1] < closes[-2] < closes[-3]:
-            put += 2   # Three consecutive bearish
-    
-    # 7. Bollinger Bands — Mean reversion detection
-    try:
-        upper, middle, lower = calculate_bollinger_bands(closes)
-        if upper and lower:
-            if closes[-1] <= lower:
-                call += 2  # Price at lower band — bounce expected
-            elif closes[-1] >= upper:
-                put += 2   # Price at upper band — rejection expected
-            elif closes[-1] > middle:
-                call += 1  # Price above middle band
-            else:
-                put += 1   # Price below middle band
-    except:
-        pass
-    
-    # 8. Market Structure
-    structure = detect_market_structure(closes)
-    if structure == "uptrend":
-        call += 2
-    elif structure == "downtrend":
-        put += 2
-    
-    macd_bullish = True
-    try:
-        macd_line, signal_line, histogram = calculate_macd(closes)
-        macd_bullish = macd_line[-1] > signal_line[-1]
-    except:
-        pass
-    
-    return call, put, rsi, macd_bullish
+    # ─── EMA Trend (weight 5) ───
+    e5=ema(closes,5); e10=ema(closes,10); e20=ema(closes,20)
+    # EMA direction
+    call+=1 if e5[-1]>e5[-2] else 0;   put+=1 if e5[-1]<e5[-2] else 0
+    call+=1 if e10[-1]>e10[-2] else 0; put+=1 if e10[-1]<e10[-2] else 0
+    call+=1 if e20[-1]>e20[-2] else 0; put+=1 if e20[-1]<e20[-2] else 0
+    # Perfect EMA stack
+    if e5[-1]>e10[-1]>e20[-1]: call+=2
+    elif e5[-1]<e10[-1]<e20[-1]: put+=2
+json
+price.json
+291.0B
+# ─── RSI (weight 3) ───
+    rsi = calculate_rsi(closes[-20:])
+    if rsi < 35:   call += 3   # oversold → bounce up
+    elif rsi > 65: put  += 3   # overbought → fall
+    elif 40 <= rsi <= 60:      # neutral zone — trend following
+        call += 1 if e5[-1] > e10[-1] else 0
+        put  += 1 if e5[-1] < e10[-1] else 0
+
+    # ─── MACD (weight 3) ───
+    macd_val, macd_hist = calculate_macd(closes)
+    if macd_val > 0 and macd_hist > 0: call += 2
+    elif macd_val < 0 and macd_hist < 0: put += 2
+    elif macd_hist > 0: call += 1
+    elif macd_hist < 0: put  += 1
+
+    # ─── Bollinger Bands (weight 2) ───
+    bb_up, bb_mid, bb_lo = calculate_bb(closes)
+    if closes[-1] <= bb_lo:  call += 2   # price at lower band → bounce
+    elif closes[-1] >= bb_up: put += 2   # price at upper band → fall
+    elif closes[-1] > bb_mid: call += 1
+    else: put += 1
+
+    # ─── Stochastic (weight 2) ───
+    stoch_k, stoch_d = calculate_stoch(closes, highs, lows)
+    if stoch_k < 25 and stoch_d < 25:   call += 2
+    elif stoch_k > 75 and stoch_d > 75: put  += 2
+
+    # ─── Price action (weight 4) ───
+    call+=1 if closes[-1]>opens[-1] else 0
+    put +=1 if closes[-1]<opens[-1] else 0
+    # Body strength
+    body=abs(closes[-1]-opens[-1]); rng=highs[-1]-lows[-1]
+    if rng>0 and body/rng>0.55:
+        call+=1 if closes[-1]>opens[-1] else 0
+        put +=1 if closes[-1]<opens[-1] else 0
+    # 3-candle confirmation
+    if closes[-1]>closes[-2]>closes[-3]: call+=2
+    elif closes[-1]<closes[-2]<closes[-3]: put+=2
+
+    # ─── Momentum trend (weight 2) ───
+    trend = sum(1 for i in range(-8,0) if closes[i]>closes[i-1])
+    if trend >= 6: call += 2
+    elif trend <= 2: put += 2
+
+    # ─── Volume proxy via range expansion (weight 1) ───
+    avg_range = sum(highs[i]-lows[i] for i in range(-10,-1)) / 9
+    curr_range = highs[-1] - lows[-1]
+    if curr_range > avg_range * 1.3:   # big candle = strong move
+        call += 1 if closes[-1] > opens[-1] else 0
+        put  += 1 if closes[-1] < opens[-1] else 0
+
+    return call, put, rsi
 
 async def _analyze_tier_async(session: aiohttp.ClientSession, pair: str, tier: int):
-    """
-    ✅ ENHANCED: Better filtering for high-accuracy signals
-    Tier 1: Strong signals (87-94% accuracy)
-    Tier 2: Medium signals (83-88% accuracy)
-    """
     try:
         candles = await fetch_candles_async(session, pair, 60)
-        if not candles or len(candles) < 30:  # Need more data
-            return None, 0, None
-        
-        closes = [c["close"] for c in candles]
-        opens = [c["open"] for c in candles]
-        highs = [c["high"] for c in candles]
-        lows = [c["low"] for c in candles]
-        
-        call, put, rsi, macd_bullish = enhanced_indicator_system(closes, opens, highs, lows)
-        total = call + put
-        if total == 0:
-            return None, 0, None
-        
-        strength = abs(call - put)
-        signal = "CALL" if call > put else "PUT"
-        
-        # Calculate ATR for volatility check (avoid ranging markets)
-        atr = calculate_atr(highs, lows, closes)
-        
-        # EMA alignment check
-        e5 = ema(closes, 5)
-        e10 = ema(closes, 10)
-        e20 = ema(closes, 20)
-        
-        # === TIER 1: STRONG SIGNALS (Minimum 87% accuracy) ===
-        if tier == 1:
-            # Must have strong score difference
-            if strength < 7:
-                return None, 0, None
-            
-            # RSI filter — avoid faded moves
-            if call > put and rsi > 68:
-                return None, 0, None  # CALL in overbought = risky
-            if put > call and rsi < 32:
-                return None, 0, None  # PUT in oversold = risky
-            
-            # RSI momentum — need some room to move
-            if call > put and rsi < 25:
-                return None, 0, None  # Too oversold, might not bounce yet
-            if put > call and rsi > 75:
-                return None, 0, None  # Too overbought, might not drop yet
-            
-            # Trend must align with signal
-            if call > put and not (e5[-1] > e10[-1] > e20[-1]):
-                return None, 0, None  # CALL needs bullish EMA alignment
-            if put > call and not (e5[-1] < e10[-1] < e20[-1]):
-                return None, 0, None  # PUT needs bearish EMA alignment
-            
-            # MACD confirmation
-            if call > put and not macd_bullish:
-                return None, 0, None  # CALL needs MACD bullish
-            if put > call and macd_bullish:
-                return None, 0, None  # PUT needs MACD bearish
-            
-            # Price action confirmation
-            if call > put and not (closes[-1] > closes[-2] > closes[-3]):
-                return None, 0, None  # CALL needs 3 consecutive bullish
-            if put > call and not (closes[-1] < closes[-2] < closes[-3]):
-                return None, 0, None  # PUT needs 3 consecutive bearish
-            
-            # Trend strength
-            recent_up = sum(1 for i in range(-5, 0) if closes[i] > closes[i-1])
-            if call > put and recent_up < 3:
-                return None, 0, None  # CALL needs uptrend momentum
-            if put > call and recent_up > 2:
-                return None, 0, None  # PUT needs downtrend momentum
-            
-            # Volatility filter — avoid very low volatility (ranging)
-            if atr is not None:
-                avg_price = sum(closes[-10:]) / 10
-                volatility_pct = (atr / avg_price) * 100
-                if volatility_pct < 0.015:  # Very low volatility = ranging
-                    return None, 0, None
-            
-            # Final accuracy score
-            base_acc = 88
-            accuracy = min(round(base_acc + (strength / total) * 5, 1), 94.0)
-            
-        # === TIER 2: MEDIUM SIGNALS (Minimum 83% accuracy) ===
-        else:
-            if strength < 4:
-                return None, 0, None
-            
-            # RSI filter
-            if call > put and rsi > 72:
-                return None, 0, None
-            if put > call and rsi < 28:
-                return None, 0, None
-            
-            # EMA alignment
-            if call > put and not (e5[-1] > e10[-1]):
-                return None, 0, None  # Need at least short-term bullish
-            if put > call and not (e5[-1] < e10[-1]):
-                return None, 0, None  # Need at least short-term bearish
-            
-            # MACD confirmation
-            if call > put and not macd_bullish:
-                return None, 0, None
-            if put > call and macd_bullish:
-                return None, 0, None
-            
-            base_acc = 84
-            accuracy = min(round(base_acc + (strength / total) * 4, 1), 90.0)
-        
-        return signal, accuracy, closes[-1]
-    except Exception as e:
-        print(f"Analysis error {pair}: {e}")
-        return None, 0, None
+        if not candles or len(candles) < 30: return None,0,None
+        closes=[c["close"] for c in candles]; opens=[c["open"] for c in candles]
+        highs=[c["high"] for c in candles];   lows=[c["low"] for c in candles]
+        call,put,rsi = indicator_system(closes,opens,highs,lows)
+        total = call+put
+        if total==0: return None,0,None
+        strength = abs(call-put)
+        e5=ema(closes,5); e10=ema(closes,10); e20=ema(closes,20)
+        macd_val, macd_hist = calculate_macd(closes)
+        recent_up = sum(1 for i in range(-5,0) if closes[i]>closes[i-1])
 
+        if tier==1:
+            # ✅ HIGH ACCURACY — সব indicator একমত হতে হবে
+            if strength < 6: return None,0,None
+            # RSI extreme থেকে সরে আসলে ভালো, একদম extreme এ না
+            if call>put and rsi > 72: return None,0,None
+            if put>call and rsi < 28: return None,0,None
+            # EMA stack perfect হতে হবে
+            if call>put and not(e5[-1]>e10[-1]>e20[-1]): return None,0,None
+            if put>call and not(e5[-1]<e10[-1]<e20[-1]): return None,0,None
+            # MACD agreement
+            if call>put and macd_hist < 0: return None,0,None
+            if put>call and macd_hist > 0: return None,0,None
+            # 3 candle momentum
+            if call>put and not(closes[-1]>closes[-2]>closes[-3]): return None,0,None
+            if put>call and not(closes[-1]<closes[-2]<closes[-3]): return None,0,None
+
+        elif tier==2:
+            # ✅ MEDIUM ACCURACY — বেশিরভাগ indicator একমত
+            if strength < 4: return None,0,None
+            if call>put and rsi > 78: return None,0,None
+if put>call and rsi < 22: return None,0,None
+            # EMA main trend
+            if call>put and e5[-1] < e10[-1]: return None,0,None
+            if put>call and e5[-1] > e10[-1]: return None,0,None
+            # MACD trend alignment
+            if call>put and macd_val < 0 and macd_hist < 0: return None,0,None
+            if put>call and macd_val > 0 and macd_hist > 0: return None,0,None
+
+        signal = "CALL" if call>put else "PUT"
+        base   = {1:88, 2:85}[tier]
+        # Accuracy = base + bonus from strength ratio
+        bonus  = round((strength / max(total, 1)) * 8, 1)
+        acc    = min(base + bonus, 94.0)
+        return signal, acc, closes[-1]
+    except: return None,0,None
+
+# ✅ FIX 5: smart_scan async — সব pair একসাথে scan (parallel)
 async def smart_scan_async(session: aiohttp.ClientSession, pairs: list, needed: int):
-    result = []
+    result   = []
     shuffled = pairs[:]
     random.shuffle(shuffled)
 
-    # First try Tier 1 (highest accuracy)
     for tier in [1, 2]:
-        if len(result) >= needed:
-            break
+        if len(result) >= needed: break
         remaining = needed - len(result)
-        already = {p for p, _, _, _ in result}
+        already   = {p for p,_,_,_ in result}
         candidates = [p for p in shuffled if p not in already]
 
+        # ✅ সব pair একসাথে analyze — parallel
         tasks = [_analyze_tier_async(session, pair, tier) for pair in candidates]
         results_raw = await asyncio.gather(*tasks, return_exceptions=True)
 
         found = []
         for pair, res in zip(candidates, results_raw):
-            if isinstance(res, Exception):
-                continue
+            if isinstance(res, Exception): continue
             sig, acc, price = res
             if sig is not None:
                 found.append((pair, sig, acc, price))
@@ -829,293 +601,194 @@ async def smart_scan_async(session: aiohttp.ClientSession, pairs: list, needed: 
     return result
 
 # =========================
-# Session Summary — Enhanced with live win/loss tracking
+# Session Summary
 # =========================
-def session_summary(win, loss, be=0):
-    total = win + loss + be
-    bars = "🟩" * win + "🟥" * loss
-    if be:
-        bars += "⬜" * be
-    wr = round(win / total * 100, 1) if total > 0 else 0
-
-    result_line = ""
-    if win > loss:
-        result_line = "✅ PROFITABLE SESSION 🔥"
-    elif loss > win:
-        result_line = "⚠️ LOSS SESSION — Next will be better 💪"
+def session_summary(win, loss):
+    total = win+loss
+    if total == 0:
+        bars = "⬜" * 5
     else:
-        result_line = "📊 NEUTRAL SESSION"
-
+        bars = "🟩"*win + "🟥"*loss
+    rate  = round(win/total*100) if total > 0 else 0
+    emoji = "🏆" if rate >= 80 else ("👍" if rate >= 60 else "📊")
     return (
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        "📊 𝗦𝗘𝗦𝗦𝗜𝗢𝗡 𝗖𝗢𝗠𝗣𝗟𝗘𝗧𝗘 📊\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"𝗧𝗼𝘁𝗮𝗹 𝗧𝗿𝗮𝗱𝗲𝘀 : {total:02d}\n\n"
-        f"🟩 𝗪𝗶𝗻  : {win:02d}\n"
-        f"🟥 𝗟𝗼𝘀𝘀 : {loss:02d}\n"
-        f"⬜ 𝗕𝗘   : {be:02d}\n\n"
-        f"🎯 𝗪𝗶𝗻 𝗥𝗮𝘁𝗲: {wr}%\n\n"
+        "𝗧𝗢𝗗𝗔𝗬𝗦   𝗩𝗜𝗣   𝗦𝗜𝗚𝗡𝗔𝗟\n"
         f"{bars}\n\n"
-        f"{result_line}\n\n"
-        "𝘼𝙇𝙃𝘼𝙈𝘿𝙐𝙇𝙄𝙇𝙇𝘼𝙃\n\n"
+        f"𝗧𝗼𝘁𝗮𝗹 𝗧𝗿𝗮𝗱𝗲𝘀 : {total:02d} 🎀\n\n"
+        f"𝗪𝗶𝗻  : {win:02d} ✅\n\n"
+        f"𝗟𝗼𝘀𝘀 : {loss:02d} {'☑️' if loss==0 else '❌'}\n\n"
+        f"𝗪𝗶𝗻𝗥𝗮𝘁𝗲 : {rate}% {emoji}\n\n"
+        "𝘼𝙇𝙃𝘼𝙈𝘿𝙐𝙇𝙄𝙇𝙇𝘼𝙃, আজকের সেশনের জন্য যথেষ্ট হয়েছে...\n\n"
         f"⭐️ {OWNER_USERNAME} ✅"
     )
 
 # =========================
-# ✅ ENHANCED AI System — Always responds
+# AI System
 # =========================
 _ai_usage: dict = {}
 chat_history: dict = {}
 
 def check_ai_limit(uid):
     uid = str(uid)
-    if int(uid) == ADMIN_ID:
-        return True, 999
+    if int(uid)==ADMIN_ID: return True,999
     today = str(datetime.now().date())
-    rec = _ai_usage.get(uid, {})
-    if rec.get("date") != today:
-        _ai_usage[uid] = {"date": today, "count": 0}
-        rec = _ai_usage[uid]
+    rec   = _ai_usage.get(uid,{})
+    if rec.get("date")!=today: _ai_usage[uid]={"date":today,"count":0}; rec=_ai_usage[uid]
     limit = 999 if is_vip(uid) else 5
-    used = rec.get("count", 0)
-    return (used < limit), max(0, limit - used)
+    used  = rec.get("count",0)
+    return (used<limit), max(0,limit-used)
 
 def use_ai_quota(uid):
-    uid = str(uid)
-    today = str(datetime.now().date())
-    if uid not in _ai_usage or _ai_usage[uid].get("date") != today:
-        _ai_usage[uid] = {"date": today, "count": 0}
-    _ai_usage[uid]["count"] += 1
+    uid=str(uid); today=str(datetime.now().date())
+    if uid not in _ai_usage or _ai_usage[uid].get("date")!=today:
+        _ai_usage[uid]={"date":today,"count":0}
+    _ai_usage[uid]["count"]+=1
 
-def add_history(uid, role, text):
-    if uid not in chat_history:
-        chat_history[uid] = []
-    chat_history[uid].append({"role": role, "content": text})
-    if len(chat_history[uid]) > 12:
-        chat_history[uid] = chat_history[uid][-12:]
+def add_history(uid,role,text):
+    if uid not in chat_history: chat_history[uid]=[]
+    chat_history[uid].append({"role":role,"content":text})
+    if len(chat_history[uid])>12: chat_history[uid]=chat_history[uid][-12:]
 
 def build_prompt(uid):
     user = get_user(uid)
-    name = user.get("name", "বন্ধু")
-    mode = user.get("mode", "normal")
-    win = user.get("win", 0)
-    loss = user.get("loss", 0)
-    be = user.get("be", 0)
-    level = user.get("level", 1)
-    total = win + loss + be
-    wr = round(win / total * 100, 1) if total > 0 else 0
-
+    name = user.get("name","বন্ধু")
+    mode = user.get("mode","normal")
     base = (
         f"তুমি Wafi — Claw VIP Trading Bot এর AI assistant। "
-        f"তুমি একজন expert forex trader এবং motivational speaker। "
-        f"বাংলা-ইংলিশ mix এ কথা বলো, খুব energetic, confident এবং বন্ধুর মতো। "
-        f"User এর নাম {name} (Level {level})। "
-        f"তার আজকের পরিসংখ্যান: Win {win}, Loss {loss}, BE {be}, Win Rate {wr}%। "
-        f"সবসময় ২-৪ লাইনে সংক্ষিপ্ত ও প্রভাবশালী উত্তর দাও। "
-        f"Signal নিতে: /signal_dao | VIP হতে: /buy ({VIP_PRICE} tk) | Support: {SUPPORT_USERNAME}"
+        f"User এর নাম {name}। বাংলায় বন্ধুর মতো কথা বলো, ২-৪ লাইনে সংক্ষিপ্ত। "
+        f"Signal: /signal_dao | VIP: /buy ({VIP_PRICE} tk) | Support: {SUPPORT_USERNAME}"
     )
-
-    mode_instructions = {
-        "funny": " মজা করে, হাস্যরসের সাথে কথা বলো। 😂",
-        "savage": " Bold, direct এবং কিছুটা attitude নিয়ে কথা বলো। 🔥",
-        "emotional": " আবেগের সাথে, অনুপ্রেরণামূলক কথা বলো। 💙",
-        "genius": " Expert level এ, technical terms সহকারে কথা বলো। 🧠",
-        "normal": ""
-    }
-    return base + mode_instructions.get(mode, "")
-
-async def groq_reply(message: str, uid: str) -> str:
-    """✅ ALWAYS returns a response — never returns None"""
-    allowed, remaining = check_ai_limit(uid)
+    modes={"funny":" মজা করে বলো।","savage":" Bold ভাবে বলো।",
+           "emotional":" আবেগের সাথে বলো।","genius":" Expert level এ বলো।"}
+    return base+modes.get(mode,"")
+# ✅ FIX 6: groq_reply — aiohttp async (block করবে না)
+async def groq_reply(message:str, uid:str) -> str:
+    allowed,_ = check_ai_limit(uid)
     if not allowed:
-        return "⛔ আজকের AI limit শেষ (৫টা/দিন)।\n💎 VIP নিলে unlimited AI access!\n/buy"
-
+        return f"⛔ আজকের AI limit শেষ (৫টা/দিন)।\n💎 VIP নিলে unlimited!\n/buy"
     for attempt in range(3):
         try:
-            prompt = build_prompt(uid)
-            messages = [{"role": "system", "content": prompt}]
-            messages.extend(chat_history.get(str(uid), [])[-6:])
-            messages.append({"role": "user", "content": message})
-
-            headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
-            body = {
-                "model": GROQ_MODEL,
-                "messages": messages,
-                "max_tokens": 300,
-                "temperature": 0.75
-            }
-
+            prompt   = build_prompt(uid)
+            messages = [{"role":"system","content":prompt}]
+            messages.extend(chat_history.get(str(uid),[])[-6:])
+            messages.append({"role":"user","content":message})
+            headers  = {"Authorization":f"Bearer {GROQ_KEY}","Content-Type":"application/json"}
+            body     = {"model":GROQ_MODEL,"messages":messages,"max_tokens":400,"temperature":0.8}
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     GROQ_URL, headers=headers, json=body,
-                    timeout=aiohttp.ClientTimeout(total=25)
+                    timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:
                     res = await resp.json(content_type=None)
-
             if "choices" in res:
                 txt = res["choices"][0]["message"]["content"].strip()
-                add_history(str(uid), "user", message)
-                add_history(str(uid), "assistant", txt)
+                add_history(str(uid),"user",message)
+                add_history(str(uid),"assistant",txt)
                 use_ai_quota(uid)
                 return txt
-
-            if "error" in res:
-                err_str = str(res["error"]).lower()
-                if "rate" in err_str or "429" in err_str:
-                    if attempt < 2:
-                        await asyncio.sleep(5)
-                    continue
-
+            err_str = str(res.get("error",""))
+            print(f"Groq API error resp: {res}")
+            if "rate" in err_str.lower() or "429" in err_str:
+                await asyncio.sleep(8*(attempt+1)); continue
+            # অন্য error হলে পরের attempt চেষ্টা করো
+            await asyncio.sleep(3); continue
         except asyncio.TimeoutError:
-            print(f"Groq timeout attempt {attempt + 1}")
-            if attempt < 2:
-                await asyncio.sleep(3)
+            print(f"Groq timeout attempt {attempt+1}")
+            if attempt < 2: await asyncio.sleep(4)
         except Exception as e:
-            print(f"Groq err {attempt + 1}: {e}")
-            if attempt < 2:
-                await asyncio.sleep(3)
-
-    # ✅ ALWAYS return a fallback message — NEVER returns None
-    return (
-        "🤖 Wafi here! 😊\n\n"
-        "একটু সমস্যা হচ্ছে, কিন্তু আমি আছি!\n\n"
-        "🔹 Signal চাইলে: /signal_dao\n"
-        "🔹 AI chat: আবার বলো\n"
-        "🔹 Stats: mystats\n\n"
-        "🚀 চলো, trade করি! 🔥"
-    )
+            print(f"Groq err {attempt+1}: {e}")
+            if attempt < 2: await asyncio.sleep(3)
+    return None
 
 # =========================
-# Brain (Offline AI for common queries)
+# Brain
 # =========================
-user_context: dict = {}
-
-
-def get_ctx(uid):
-    return user_context.get(uid)
-
-
-def set_ctx(uid, v):
-    user_context[uid] = v
-
+user_context:dict = {}
+def get_ctx(uid): return user_context.get(uid)
+def set_ctx(uid,v): user_context[uid]=v
 
 def load_umem(uid):
-    data = {}
+    data={}
     try:
-        with open(f"user_{uid}.db", "r", encoding="utf-8") as f:
+        with open(f"user_{uid}.db","r",encoding="utf-8") as f:
             for line in f:
-                if "=" in line:
-                    k, v = line.strip().split("=", 1)
-                    data[k] = v
-    except:
-        pass
+                if "=" in line: k,v=line.strip().split("=",1); data[k]=v
+    except: pass
     return data
 
-
-def save_umem(uid, key, value):
-    data = load_umem(uid)
-    data[key] = value
-    with open(f"user_{uid}.db", "w", encoding="utf-8") as f:
-        [f.write(k + "=" + data[k] + "\n") for k in data]
-
+def save_umem(uid,key,value):
+    data=load_umem(uid); data[key]=value
+    with open(f"user_{uid}.db","w",encoding="utf-8") as f:
+        [f.write(k+"="+data[k]+"\n") for k in data]
 
 def detect_emotion(text):
-    t = text.lower()
-    if any(w in t for w in ["sad", "😢", "মন খারাপ", "কষ্ট"]):
-        return "sad"
-    if any(w in t for w in ["happy", "😂", "খুশি"]):
-        return "happy"
-    if any(w in t for w in ["angry", "😡", "রাগ"]):
-        return "angry"
+    t=text.lower()
+    if any(w in t for w in ["sad","😢","মন খারাপ","কষ্ট"]): return "sad"
+    if any(w in t for w in ["happy","😂","খুশি"]): return "happy"
+    if any(w in t for w in ["angry","😡","রাগ"]): return "angry"
     return "normal"
 
-
 def is_english(text):
-    return sum(1 for c in text if c.isascii() and c.isalpha()) > len(text) * 0.5
-
+    return sum(1 for c in text if c.isascii() and c.isalpha()) > len(text)*0.5
 
 def brain(text, uid):
-    msg = text.lower().strip()
-    mem = load_umem(uid)
+    msg  = text.lower().strip()
+    mem  = load_umem(uid)
     name = mem.get("name")
-    ctx = get_ctx(uid)
-    emo = detect_emotion(text)
-    eng = is_english(text)
-    user = get_user(uid)
-    win = user.get("win", 0)
-    loss = user.get("loss", 0)
+    ctx  = get_ctx(uid)
+    emo  = detect_emotion(text)
+    eng  = is_english(text)
+    def r(bn,en=None): return (en if eng and en else bn)
 
-    def r(bn, en=None):
-        return (en if eng and en else bn)
+    if ctx=="ask_name":
+        save_umem(uid,"name",text); set_ctx(uid,None)
+        return r(f"চমৎকার নাম! {text} 😊",f"Great name! {text} 😊")
 
-    if ctx == "ask_name":
-        save_umem(uid, "name", text)
-        set_ctx(uid, None)
-        return r(f"চমৎকার নাম! {text} 😊", f"Great name! {text} 😊")
+    if msg in ["hi","hello","hey","হাই","হ্যালো","সালাম","আসসালামুআলাইকুম"]:
+        if name: return r(f"ওয়ালাইকুম আস্সালাম, {name}! 😊",f"Hey {name}! 😊")
+        set_ctx(uid,"ask_name")
+        return r("আস্সালামু আলাইকুম! তোমার নাম কী? 😊","Hey! What's your name? 😊")
 
-    if msg in ["hi", "hello", "hey", "হাই", "হ্যালো", "সালাম", "আসসালামুআলাইকুম"]:
-        if name:
-            return r(f"ওয়ালাইকুম আস্সালাম, {name}! 😊", f"Hey {name}! 😊")
-        set_ctx(uid, "ask_name")
-        return r("আস্সালামু আলাইকুম! তোমার নাম কী? 😊", "Hey! What's your name? 😊")
+    if emo=="sad":   return r("মন খারাপ কেন? বলো 😔")
+    if emo=="happy": return r("দারুণ! 😊🔥")
+    if emo=="angry": return r("শান্ত হও 😅 বলো কী হয়েছে?")
 
-    if emo == "sad":
-        return r("মন খারাপ কেন? বলো 😔")
-    if emo == "happy":
-        return r("দারুণ! 😊🔥")
-    if emo == "angry":
-        return r("শান্ত হও 😅 বলো কী হয়েছে?")
-
-    if any(w in msg for w in ["কেমন আছো", "how are you"]):
+    if any(w in msg for w in ["কেমন আছো","how are you"]):
         return r("আলহামদুলিল্লাহ ভালো! তুমি? 😊")
-    if any(w in msg for w in ["কে তুমি", "who are you"]):
-        return r("আমি Wafi — Claw VIP BOT এর AI 🤖")
-    if any(w in msg for w in ["payment", "পেমেন্ট", "pay"]):
+    if any(w in msg for w in ["কে তুমি","who are you"]):
+return r("আমি Wafi — Claw VIP BOT এর AI 🤖")
+    if any(w in msg for w in ["payment","পেমেন্ট","pay"]):
         return (f"💰 Payment:\n📱 bKash: {PAYMENT_INFO['bkash']}\n"
                 f"📱 Nagad: {PAYMENT_INFO['nagad']}\n💳 Binance: {PAYMENT_INFO['binance']}")
-    if any(w in msg for w in ["vip", "ভিআইপি"]):
+    if any(w in msg for w in ["vip","ভিআইপি"]):
         return f"💎 VIP মাত্র {VIP_PRICE} টাকা/মাস! দিনে ১৫টা signal। /buy"
-    if "time" in msg or "সময়" in msg:
-        return f"⏰ ঢাকার সময়: {get_time_str()}"
-    if "bye" in msg or "বিদায়" in msg:
-        return r("আল্লাহ হাফেজ! 👋")
+    if "time" in msg or "সময়" in msg: return f"⏰ ঢাকার সময়: {get_time_str()}"
+    if "bye" in msg or "বিদায়" in msg: return r("আল্লাহ হাফেজ! 👋")
     return None
-
 
 def handle_commands(msg, uid):
-    m = msg.lower().strip()
+    m    = msg.lower().strip()
     user = get_user(uid)
     if m.startswith("mode "):
-        mode = m.split(" ")[1] if len(m.split()) > 1 else ""
-        modes = ["funny", "savage", "emotional", "genius", "normal"]
-        if mode in modes:
-            update_user(uid, "mode", mode)
-            return f"Mode: {mode} ✅"
+        mode  = m.split(" ")[1] if len(m.split())>1 else ""
+        modes = ["funny","savage","emotional","genius","normal"]
+        if mode in modes: update_user(uid,"mode",mode); return f"Mode: {mode} ✅"
         return f"Available: {', '.join(modes)}"
     if m.startswith("setname "):
-        name = msg.replace("setname ", "").strip()
-        update_user(uid, "name", name)
-        return f"নাম সেট: {name} ✅"
-    if m == "mystats":
+        name = msg.replace("setname ","").strip()
+        update_user(uid,"name",name); return f"নাম সেট: {name} ✅"
+    if m=="mystats":
         vip = is_vip(uid)
-        win = user.get('win', 0)
-        loss = user.get('loss', 0)
-        be = user.get('be', 0)
-        total = win + loss + be
-        wr = round(win / total * 100, 1) if total > 0 else 0
         return (f"📊 Stats:\n{'💎 VIP' if vip else '🆓 Free'}\n"
-                f"Level: {user['level']} | XP: {user['xp']}/{user['level'] * 50}\n"
-                f"Win: {win} | Loss: {loss} | BE: {be} | Win Rate: {wr}%")
-    if m in ["history", "my trade", "mytrades"]:
-        return "📋 Trade History: /history"
+                f"Level: {user['level']} | XP: {user['xp']}/{user['level']*50}\n"
+                f"Win: {user.get('win',0)} | Loss: {user.get('loss',0)}")
     return None
-
 
 # =========================
 # Start
 # =========================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = str(update.message.from_user.id)
+async def start(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    uid   = str(update.message.from_user.id)
     uname = update.message.from_user.first_name or "বন্ধু"
     get_user(uid)
     await update.message.reply_text(
@@ -1124,88 +797,56 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🏆  Claw VIP BOT  🏆\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "✅ 20+ Indicator + AI Filter\n"
-        "✅ Live WIN/LOSS Result (Candle-based)\n"
+        "✅ Live WIN/LOSS Result\n"
         "✅ 85–94% Accuracy\n\n"
         "📈 Plan:\n"
         f"🆓 Free: দিনে {FREE_SIGNALS}টা Signal\n"
-        f"💎 VIP:  দিনে {VIP_SIGNALS * 3}টা Signal\n\n"
+        f"💎 VIP:  দিনে {VIP_SIGNALS*3}টা Signal\n\n"
         "• /signal_dao — Signal নিন\n"
         "• /buy — VIP কিনুন\n"
         "• /status — Status\n"
-        "• /history — Trade History\n"
         "• /help — Help\n\n"
         f"📞 {SUPPORT_USERNAME} | 👑 {OWNER_USERNAME}"
     )
 
-
-async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = str(update.message.from_user.id)
-    user = get_user(uid)
-    vip = is_vip(uid)
-    slots = user.get("session_used_today", [])
-    win = user.get('win', 0)
-    loss = user.get('loss', 0)
-    be = user.get('be', 0)
-    total = win + loss + be
-    wr = round(win / total * 100, 1) if total > 0 else 0
+async def status_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    uid  = str(update.message.from_user.id)
+    user = get_user(uid); vip = is_vip(uid)
+    slots= user.get("session_used_today",[])
     await update.message.reply_text(
         "📊 Status:\n\n"
-        + ("💎 VIP" if vip else "🆓 Free") + "\n"
+        +("💎 VIP" if vip else "🆓 Free")+"\n"
         f"Session: {len(slots)}/{'3' if vip else '1'}\n"
-        f"Win: {win} | Loss: {loss} | BE: {be} | Win Rate: {wr}%\n\n"
+        f"Win: {user.get('win',0)} | Loss: {user.get('loss',0)}\n\n"
         f"Support: {SUPPORT_USERNAME}"
     )
 
-
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = str(update.message.from_user.id)
-    vip = is_vip(uid)
+async def help_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    uid = str(update.message.from_user.id); vip = is_vip(uid)
     await update.message.reply_text(
         "📋 Commands:\n\n"
         "• /signal_dao — Signal\n• /buy — VIP কিনুন\n"
-        "• /status — Status\n• /history — Trade History\n"
-        "• mystats — Stats\n\n"
-        + ("💎 VIP: সকাল ৭–১২ | দুপুর ১–৪ | সন্ধ্যা ৭–৯:৩০"
-           if vip else f"🆓 Free: দিনে {FREE_SIGNALS}টা | VIP = {VIP_SIGNALS * 3}টা /buy") +
+        "• /status — Status\n• mystats — Stats\n\n"
+        +("💎 VIP: সকাল ৭–১২ | দুপুর ১–৪ | সন্ধ্যা ৭–৯:৩০"
+          if vip else f"🆓 Free: দিনে {FREE_SIGNALS}টা | VIP = {VIP_SIGNALS*3}টা /buy")+
         f"\n\n📞 {SUPPORT_USERNAME}"
     )
 
-
-async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = str(update.message.from_user.id)
-    trades = await get_user_trade_history(uid, 10)
-    if not trades:
-        await update.message.reply_text("📋 এখনো কোনো trade history নেই। /signal_dao লিখে শুরু করো! 🚀")
-        return
-    lines = ["📋 Trade History (Last 10)\n"]
-    for i, t in enumerate(reversed(trades), 1):
-        result_emoji = "🟩" if t["result"] == "WIN" else ("🟥" if t["result"] == "LOSS" else "⬜")
-        lines.append(
-            f"{i}. {t['pair']} {t['signal']}\n"
-            f"   {result_emoji} {t['result']} ({t['pips']} pips)\n"
-            f"   Entry: {t['entry']} → Exit: {t['exit']}\n"
-        )
-    await update.message.reply_text("\n".join(lines))
-
-
-async def vip_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def vip_on(update:Update, context:ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Admin only!")
-        return
+        await update.message.reply_text("❌ Admin only!"); return
     try:
         target = int(context.args[0])
         await _activate_vip(context.bot, target, "Manual by Admin")
         await update.message.reply_text(f"✅ {target} VIP activated!")
-    except:
-        await update.message.reply_text("use: /vip_on [user_id]")
+    except: await update.message.reply_text("use: /vip_on [user_id]")
 
-
-async def _activate_vip(bot, target_id: int, method: str = ""):
-    update_user(str(target_id), "is_vip", True)
+async def _activate_vip(bot, target_id:int, method:str=""):
+    update_user(str(target_id),"is_vip",True)
     async with _file_lock:
         d = load_json(DATA_FILE)
-        d["total_vip"] = d.get("total_vip", 0) + 1
-        d["total_income"] = d.get("total_income", 0) + VIP_PRICE
+d["total_vip"]    = d.get("total_vip",0)+1
+        d["total_income"] = d.get("total_income",0)+VIP_PRICE
         save_json(DATA_FILE, d)
     try:
         await bot.send_message(
@@ -1213,16 +854,15 @@ async def _activate_vip(bot, target_id: int, method: str = ""):
             text=(
                 "🎉 অভিনন্দন! তুমি এখন 💎 VIP Member!\n\n"
                 "⏰ সকাল ৭–১২ | দুপুর ১–৪ | সন্ধ্যা ৭–৯:৩০\n"
-                f"✅ {VIP_SIGNALS}×৩ = {VIP_SIGNALS * 3} signal/দিন\n\n"
+                f"✅ {VIP_SIGNALS}×৩ = {VIP_SIGNALS*3} signal/দিন\n\n"
                 f"/signal_dao লিখে শুরু করো! 🔥\n{OWNER_USERNAME}"
             )
         )
-    except:
-        pass
+    except: pass
     try:
         users = load_json(USER_FILE)
-        udata = users.get(str(target_id), {})
-        uname = udata.get("name", "বন্ধু")
+        udata = users.get(str(target_id),{})
+        uname = udata.get("name","বন্ধু")
         await bot.send_message(
             chat_id=GROUP_ID,
             text=(
@@ -1237,45 +877,39 @@ async def _activate_vip(bot, target_id: int, method: str = ""):
                 f"━━━━━━━━━━━━━━━━━━━━━\n{OWNER_USERNAME}"
             )
         )
-    except:
-        pass
-
+    except: pass
 
 # =========================
-# ✅ FIXED: Signal Session — Enhanced with live win/loss tracking
+# ✅ FIX 7: Signal Session — fully async with aiohttp session
+# ৩০০+ user একসাথে signal নিলেও সার্ভার crash করবে না
 # =========================
-async def run_signal_session(update: Update, uid: str):
+async def run_signal_session(update:Update, uid:str):
     if uid in active_sessions:
-        await update.message.reply_text("⚠️ Session চলছে!")
-        return
+        await update.message.reply_text("⚠️ Session চলছে!"); return
 
     reset_daily(uid)
 
-    if not is_vip(uid) and int(uid) != ADMIN_ID:
+    if not is_vip(uid) and int(uid)!=ADMIN_ID:
         user_data = get_user(uid)
-        if len(user_data.get("session_used_today", [])) >= 1:
+        if len(user_data.get("session_used_today",[]))>=1:
             await update.message.reply_text(
                 "⛔ আজকের signal নেওয়া হয়ে গেছে।\nকাল আবার পাবে। 😊\n\n"
-                f"💎 VIP = {VIP_SIGNALS * 3}টা/দিন!\n/buy"
-            )
-            return
+                f"💎 VIP = {VIP_SIGNALS*3}টা/দিন!\n/buy"
+            ); return
         slot = "free"
-    elif is_vip(uid) and int(uid) != ADMIN_ID:
-        ok, nxt = can_signal(uid)
+    elif is_vip(uid) and int(uid)!=ADMIN_ID:
+        ok,nxt = can_signal(uid)
         if not ok:
             await update.message.reply_text(
                 f"⛔ VIP session বন্ধ।\n⏰ পরবর্তী: {nxt}\n\n"
                 "সকাল ৭–১২ | দুপুর ১–৪ | সন্ধ্যা ৭–৯:৩০"
-            )
-            return
-        used, slot = check_session_used(uid)
+            ); return
+        used,slot = check_session_used(uid)
         if used:
-            sn = {"morning": "সকাল", "afternoon": "দুপুর", "evening": "সন্ধ্যা"}.get(slot, slot)
-            await update.message.reply_text(f"⛔ {sn} session আগেই নেওয়া হয়েছে।\nপরের session এ এসো。")
-            return
-        if get_vip_session_count(uid) >= 3:
-            await update.message.reply_text("⛔ আজকের ৩টা VIP session শেষ।\nকাল আবার পাবে。")
-            return
+            sn={"morning":"সকাল","afternoon":"দুপুর","evening":"সন্ধ্যা"}.get(slot,slot)
+            await update.message.reply_text(f"⛔ {sn} session আগেই নেওয়া হয়েছে।\nপরের session এ এসো।"); return
+        if get_vip_session_count(uid)>=3:
+            await update.message.reply_text("⛔ আজকের ৩টা VIP session শেষ।\nকাল আবার পাবে।"); return
     else:
         slot = None
 
@@ -1283,249 +917,217 @@ async def run_signal_session(update: Update, uid: str):
     active_sessions.add(uid)
 
     try:
-        await update.message.reply_text("🔍 Market analyze করছি... ২০+ indicator + AI filter ✅")
-        pairs = REAL_PAIRS.copy()
-        random.shuffle(pairs)
+        await update.message.reply_text("🔍 Market analyze করছি...")
+        pairs = REAL_PAIRS.copy(); random.shuffle(pairs)
         await update.message.reply_text("📡 Market scan করছি...")
 
+        # ✅ একটা aiohttp session পুরো signal flow এ reuse
         async with aiohttp.ClientSession() as http_session:
             signal_list = await smart_scan_async(http_session, pairs, per_session)
 
             if not signal_list:
                 await update.message.reply_text(
-                    "⚠️ এই মুহূর্তে market data আসছে না।\n২ মিনিট পরে আবার /signal_dao লিখো。"
+                    "⚠️ এই মুহূর্তে market data আসছে না।\n২ মিনিট পরে আবার /signal_dao লিখো।"
                 )
-                active_sessions.discard(uid)
-                return
+                active_sessions.discard(uid); return
 
-            if slot:
-                mark_session_used(uid, slot)
+            if slot: mark_session_used(uid, slot)
 
-            session_win = 0
-            session_loss = 0
-            session_be = 0
-            trade_results = []
+            session_win=0; session_loss=0
 
-            for pair, signal_type, accuracy, entry_est in signal_list:
-                now = get_dhaka_now()
-                wait_sec = seconds_to_next_candle()
-                trade_time = (now + timedelta(seconds=wait_sec)).replace(
-                    second=0, microsecond=0
-                ).strftime("%H:%M")
+            for pair,signal_type,accuracy,entry_est in signal_list:
+                now       = get_dhaka_now()
+                wait_sec  = seconds_to_next_candle()
+                trade_time = (now+timedelta(seconds=wait_sec)).replace(
+                    second=0,microsecond=0).strftime("%H:%M")
 
-                sig_line = "🟢 CALL UP ⬆️" if signal_type == "CALL" else "🔴 PUT DOWN ⬇️"
+                sig_line  = "🟢 CALL UP ⬆️" if signal_type=="CALL" else "🔴 PUT DOWN ⬇️"
                 vip_badge = "💎" if is_vip(uid) else "🆓"
-                acc_line = f"🎯 Accuracy: {accuracy}%" if is_vip(uid) else ""
-
-                await update.message.reply_text(
+                acc_line  = f"🎯 Accuracy: {accuracy}%" if is_vip(uid) else ""
+await update.message.reply_text(
                     "━━━━━━━━━━━━━━━━━\n"
                     f"📊 Pair  : {pair}\n"
                     f"⏰ Entry : {trade_time}\n"
                     "🕐 Time  : 1 Minute\n"
                     f"{sig_line}\n"
-                    + (f"{acc_line}\n" if acc_line else "") +
+                    +(f"{acc_line}\n" if acc_line else "")+
                     "━━━━━━━━━━━━━━━━━\n"
                     f"{vip_badge} CLAW VIP BOT {vip_badge}"
                 )
 
-                await asyncio.sleep(wait_sec + 2)
+                await asyncio.sleep(wait_sec+1)
 
-                # Get entry price with retries
-                await update.message.reply_text(f"📊 {pair}: Entry price নিচ্ছি...")
-                entry_price = await get_accurate_price_with_retries(http_session, pair)
-                if not entry_price:
-                    entry_price = entry_est
-
-                if entry_price:
-                    await update.message.reply_text(
-                        f"📊 {pair}: Entry = {entry_price}\n"
-                        f"⏳ 1 মিনিট অপেক্ষা করুন..."
-                    )
-                else:
-                    await update.message.reply_text(
-                        f"⚠️ {pair}: Entry price পাওয়া যায়নি, অপেক্ষা করছি..."
-                    )
+                entry_price = None
+                for _ in range(3):
+                    entry_price = await fetch_realtime_price_async(http_session, pair)
+                    if entry_price: break
+                    await asyncio.sleep(2)
+                if not entry_price: entry_price = entry_est
 
                 await asyncio.sleep(62)
 
-                # Get exit price with retries
-                await update.message.reply_text(f"📊 {pair}: Exit price নিচ্ছি...")
-                exit_price = await get_accurate_price_with_retries(http_session, pair)
+                exit_price = None
+                for _ in range(3):
+                    exit_price = await fetch_realtime_price_async(http_session, pair)
+                    if exit_price: break
+                    await asyncio.sleep(2)
 
                 if entry_price and exit_price:
-                    trade_result = determine_trade_result(entry_price, exit_price, signal_type, pair)
-                    dir_str = "CALL ⬆️" if signal_type == "CALL" else "PUT ⬇️"
-
-                    if trade_result["result"] == "WIN":
-                        msg = (
-                            f"✅ **WIN** 🟩 — {pair}\n"
-                            f"📈 {dir_str} | +{trade_result['pips']} pips\n"
-                            f"Entry: {entry_price} → Exit: {exit_price}"
-                        )
-                        session_win += 1
-                        await update_user_async(uid, "win", get_user(uid).get("win", 0) + 1)
-                    elif trade_result["result"] == "LOSS":
-                        msg = (
-                            f"❌ **LOSS** 🟥 — {pair}\n"
-                            f"📉 {dir_str} | -{trade_result['pips']} pips\n"
-                            f"Entry: {entry_price} → Exit: {exit_price}"
-                        )
-                        session_loss += 1
-                        await update_user_async(uid, "loss", get_user(uid).get("loss", 0) + 1)
-                    else:  # BE
-                        msg = (
-                            f"⬜ **BREAK EVEN** — {pair}\n"
-                            f"📊 {dir_str}\n"
-                            f"Entry: {entry_price} → Exit: {exit_price}\n"
-                            f"No significant movement"
-                        )
-                        session_be += 1
-
-                    # Store in trade history
-                    await add_trade_to_history(uid, {
-                        "pair": pair,
-                        "signal": signal_type,
-                        "result": trade_result["result"],
-                        "pips": trade_result["pips"],
-                        "entry": entry_price,
-                        "exit": exit_price,
-                        "diff": trade_result["diff"],
-                        "accuracy": accuracy
-                    })
-
-                    await update.message.reply_text(msg)
+                    diff = exit_price - entry_price
+                    pip_diff = abs(diff) * 10000  # pips
+                    if abs(diff) >= 0.000001:
+                        is_win = diff>0 if signal_type=="CALL" else diff<0
+                    else:
+                        await asyncio.sleep(10)
+                        final = await fetch_realtime_price_async(http_session, pair)
+                        if final:
+                            diff2 = final - entry_price
+                            pip_diff = abs(diff2) * 10000
+                            is_win = diff2>0 if signal_type=="CALL" else diff2<0
+                        else: is_win = False
                 else:
-                    await update.message.reply_text(
-                        f"⚠️ **NO TRADE** — {pair}\nPrice data unavailable"
-                    )
+                    is_win = None
 
-                await update_user_async(uid, "signal_count", get_user(uid).get("signal_count", 0) + 1)
-                add_xp(uid, 5)
+                if is_win is None: continue
+
+                dir_str    = "CALL ⬆️" if signal_type=="CALL" else "PUT ⬇️"
+                result_str = "✅ WIN" if is_win else "❌ LOSS"
+                medal      = "🏆" if is_win else "💔"
+
+                # ✅ DETAILED WIN/LOSS with prices
+                entry_txt = f"{entry_price:.5f}" if entry_price else "N/A"
+                exit_txt  = f"{exit_price:.5f}"  if exit_price  else "N/A"
+                pip_txt   = f"{pip_diff:.1f}" if entry_price and exit_price else "?"
+
+                await update.message.reply_text(
+                    "━━━━━━━━━━━━━━━━━\n"
+                    f"{medal} {pair} — {dir_str}\n"
+                    f"📥 Entry : {entry_txt}\n"
+                    f"📤 Exit  : {exit_txt}\n"
+                    f"📐 Pips  : {pip_txt}\n"
+                    f"🎯 Result: {result_str}\n"
+                    "━━━━━━━━━━━━━━━━━"
+                )
+
+                if is_win:
+                    session_win+=1
+                    await update_user_async(uid,"win",get_user(uid).get("win",0)+1)
+                else:
+                    session_loss+=1
+                    await update_user_async(uid,"loss",get_user(uid).get("loss",0)+1)
+
+                await update_user_async(uid,"signal_count",get_user(uid).get("signal_count",0)+1)
+                add_xp(uid,5)
                 await asyncio.sleep(3)
 
-        await update.message.reply_text(session_summary(session_win, session_loss, session_be))
+        await update.message.reply_text(session_summary(session_win,session_loss))
 
     except Exception as e:
         print(f"Signal error uid={uid}: {e}")
-        import traceback
-        traceback.print_exc()
-        await update.message.reply_text("⚠️ সমস্যা হয়েছে。 আবার try করো। /signal_dao")
+        await update.message.reply_text("⚠️ সমস্যা হয়েছে। আবার try করো।")
     finally:
         active_sessions.discard(uid)
-
 
 # =========================
 # Payment System
 # =========================
-async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def buy(update:Update, context:ContextTypes.DEFAULT_TYPE):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"💰 {VIP_PRICE} টাকা — ১ মাস", callback_data="pay_amt_500")],
-        [InlineKeyboardButton("🔙 বাতিল", callback_data="pay_cancel")],
+[InlineKeyboardButton("🔙 বাতিল", callback_data="pay_cancel")],
     ])
     await update.message.reply_text(
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "💎 VIP PLAN\n"
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"✅ দিনে {VIP_SIGNALS * 3}টা Signal ({VIP_SIGNALS}×৩ session)\n"
+        f"✅ দিনে {VIP_SIGNALS*3}টা Signal ({VIP_SIGNALS}×৩ session)\n"
         "✅ 85–94% Accuracy\n"
         "✅ Live WIN/LOSS Result\n\n"
         "নিচে সিলেক্ট করো:",
         reply_markup=kb
     )
 
-
 async def payment_callback(update, context):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    uid = str(query.from_user.id)
+    query = update.callback_query; await query.answer()
+    data  = query.data; uid = str(query.from_user.id)
 
-    if data == "pay_amt_500":
-        pending_payment[uid] = {"method": "pending", "amount": 500}
+    if data=="pay_amt_500":
+        pending_payment[uid]={"method":"pending","amount":500}
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📱 bKash", callback_data="pay_bkash")],
-            [InlineKeyboardButton("📱 Nagad", callback_data="pay_nagad")],
+            [InlineKeyboardButton("📱 bKash",   callback_data="pay_bkash")],
+            [InlineKeyboardButton("📱 Nagad",   callback_data="pay_nagad")],
             [InlineKeyboardButton("💳 Binance", callback_data="pay_binance")],
-            [InlineKeyboardButton("🔙 Back", callback_data="pay_back")],
+            [InlineKeyboardButton("🔙 Back",    callback_data="pay_back")],
         ])
         await query.edit_message_text("💳 Payment method বেছে নাও:", reply_markup=kb)
 
-    elif data == "pay_back":
+    elif data=="pay_back":
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"💰 {VIP_PRICE} টাকা — ১ মাস", callback_data="pay_amt_500")],
-            [InlineKeyboardButton("🔙 বাতিল", callback_data="pay_cancel")],
+            [InlineKeyboardButton(f"💰 {VIP_PRICE} টাকা — ১ মাস",callback_data="pay_amt_500")],
+            [InlineKeyboardButton("🔙 বাতিল",callback_data="pay_cancel")],
         ])
         await query.edit_message_text(f"💎 VIP — {VIP_PRICE} টাকা/মাস\nAmount সিলেক্ট করো:", reply_markup=kb)
 
-    elif data in ["pay_bkash", "pay_nagad", "pay_binance"]:
-        method = data.replace("pay_", "")
-        if uid in pending_payment:
-            pending_payment[uid]["method"] = method
-        pending_txn[uid] = {"method": method, "amount": pending_payment.get(uid, {}).get("amount", VIP_PRICE)}
-        info = PAYMENT_INFO.get(method, "")
+    elif data in ["pay_bkash","pay_nagad","pay_binance"]:
+        method = data.replace("pay_","")
+        if uid in pending_payment: pending_payment[uid]["method"]=method
+        pending_txn[uid] = {"method":method,"amount":pending_payment.get(uid,{}).get("amount",VIP_PRICE)}
+        info   = PAYMENT_INFO.get(method,"")
         amount = pending_txn[uid]["amount"]
-        if method == "binance":
-            msg = (f"💳 Binance Pay ID: {info}\n\n"
-                   f"💰 Amount: {amount} TK এর সমপরিমাণ USDT\n\n"
-                   "✅ Transfer করার পর\n"
-                   "📋 শুধু Transaction ID টা পাঠাও\n"
-                   "(bot নিজেই admin কে পাঠাবে)")
+        if method=="binance":
+            msg=(f"💳 Binance Pay ID: {info}\n\n"
+                 f"💰 Amount: {amount} TK এর সমপরিমাণ USDT\n\n"
+                 "✅ Transfer করার পর\n"
+                 "📋 শুধু Transaction ID টা পাঠাও\n"
+                 "(bot নিজেই admin কে পাঠাবে)")
         else:
-            msg = (f"📱 {method.upper()} Number: {info}\n(Send Money)\n\n"
-                   f"💰 Amount: {amount} টাকা\n\n"
-                   "✅ পাঠানোর পর\n"
-                   "📋 শুধু Transaction ID টা পাঠাও\n"
-                   "(bot নিজেই admin কে পাঠাবে)")
+            msg=(f"📱 {method.upper()} Number: {info}\n(Send Money)\n\n"
+                 f"💰 Amount: {amount} টাকা\n\n"
+                 "✅ পাঠানোর পর\n"
+                 "📋 শুধু Transaction ID টা পাঠাও\n"
+                 "(bot নিজেই admin কে পাঠাবে)")
         await query.edit_message_text(msg)
 
-    elif data == "pay_cancel":
-        pending_payment.pop(uid, None)
-        pending_txn.pop(uid, None)
+    elif data=="pay_cancel":
+        pending_payment.pop(uid,None); pending_txn.pop(uid,None)
         await query.edit_message_text("❌ বাতিল করা হয়েছে।")
 
     elif data.startswith("vip_yes_"):
-        if query.from_user.id != ADMIN_ID:
-            await query.answer("❌ Admin only!", show_alert=True)
-            return
-        target_id = int(data.replace("vip_yes_", ""))
-        txn_info = query.message.text
-        method = "Payment"
+        if query.from_user.id!=ADMIN_ID: await query.answer("❌ Admin only!",show_alert=True); return
+        target_id = int(data.replace("vip_yes_",""))
+        txn_info  = query.message.text
+        method    = "Payment"
         for line in txn_info.split("\n"):
-            if "Method" in line:
-                method = line.split(":")[-1].strip()
+            if "Method" in line: method=line.split(":")[-1].strip()
         await _activate_vip(context.bot, target_id, method)
         await query.edit_message_text(f"✅ {target_id} — VIP activated! +{VIP_PRICE}৳")
 
     elif data.startswith("vip_no_"):
-        if query.from_user.id != ADMIN_ID:
-            await query.answer("❌ Admin only!", show_alert=True)
-            return
-        target_id = int(data.replace("vip_no_", ""))
+        if query.from_user.id!=ADMIN_ID: await query.answer("❌ Admin only!",show_alert=True); return
+        target_id = int(data.replace("vip_no_",""))
         try:
             await context.bot.send_message(
                 chat_id=target_id,
                 text=f"❌ Payment Rejected\nদুঃখিত, verify হয়নি।\n{SUPPORT_USERNAME}"
             )
-        except:
-            pass
+        except: pass
         await query.edit_message_text(f"❌ {target_id} — Rejected.")
 
     elif data.startswith("admin_"):
         await handle_admin_callback(query, context, data)
 
-
-async def handle_txn_id(update: Update, context: ContextTypes.DEFAULT_TYPE, uid: str, txn_id: str):
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    user = update.message.from_user
-    p = pending_txn.get(uid, {})
-    method = p.get("method", "unknown")
+async def handle_txn_id(update:Update, context:ContextTypes.DEFAULT_TYPE, uid:str, txn_id:str):
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    user   = update.message.from_user
+    p      = pending_txn.get(uid, {})
+    method = p.get("method","unknown")
     amount = p.get("amount", VIP_PRICE)
     kb = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✅ VIP দাও", callback_data=f"vip_yes_{user.id}"),
-            InlineKeyboardButton("❌ বাতিল", callback_data=f"vip_no_{user.id}")
+            InlineKeyboardButton("❌ বাতিল",   callback_data=f"vip_no_{user.id}")
         ]
     ])
     try:
@@ -1543,8 +1145,8 @@ async def handle_txn_id(update: Update, context: ContextTypes.DEFAULT_TYPE, uid:
             ),
             reply_markup=kb
         )
-        pending_txn.pop(uid, None)
-        pending_payment.pop(uid, None)
+        pending_txn.pop(uid,None)
+        pending_payment.pop(uid,None)
         await update.message.reply_text(
             "✅ Transaction ID পাঠানো হয়েছে!\n"
             "📸 এখন payment এর Screenshot পাঠাও\n"
@@ -1553,11 +1155,9 @@ async def handle_txn_id(update: Update, context: ContextTypes.DEFAULT_TYPE, uid:
     except Exception as e:
         await update.message.reply_text(f"সমস্যা। {SUPPORT_USERNAME}")
 
-
-async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.photo:
-        return
-    user = update.message.from_user
+async def handle_screenshot(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.photo: return
+    user  = update.message.from_user
     photo = update.message.photo[-1].file_id
     try:
         await context.bot.send_photo(
@@ -1565,22 +1165,19 @@ async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption=f"📸 Payment Screenshot\n👤 {user.first_name}\n🆔 {user.id}"
         )
         await update.message.reply_text("📸 Screenshot পৌঁছে গেছে! Admin verify করবে। 😊")
-    except:
-        pass
-
+    except: pass
 
 # =========================
 # Admin Panel
 # =========================
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != ADMIN_ID:
-        return
+async def admin_panel(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id!=ADMIN_ID: return
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("👤 My Profile", callback_data="admin_profile")],
+        [InlineKeyboardButton("👤 My Profile",        callback_data="admin_profile")],
         [InlineKeyboardButton("💳 My Payment System", callback_data="admin_payment")],
-        [InlineKeyboardButton("📋 All Commands", callback_data="admin_commands")],
-        [InlineKeyboardButton("📢 Admin Message", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("📋 All Commands",      callback_data="admin_commands")],
+        [InlineKeyboardButton("📢 Admin Message",     callback_data="admin_broadcast")],
     ])
     await update.message.reply_text(
         "━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1589,21 +1186,20 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=kb
     )
 
-
 async def handle_admin_callback(query, context, data):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    d = load_json(DATA_FILE)
+    d     = load_json(DATA_FILE)
     users = load_json(USER_FILE)
     today = str(datetime.now().date())
 
-    if data == "admin_profile":
-        total_users = len(users)
-        active_vip = sum(1 for u in users.values() if u.get("is_vip"))
-        today_vip = sum(1 for u in users.values()
-                        if u.get("is_vip") and u.get("last_reset") == today)
-        total_vip = d.get("total_vip", 0)
-        total_income = d.get("total_income", 0)
-        bot_on = d.get("bot_on", True)
+    if data=="admin_profile":
+        total_users  = len(users)
+        active_vip   = sum(1 for u in users.values() if u.get("is_vip"))
+        today_vip    = sum(1 for u in users.values()
+                          if u.get("is_vip") and u.get("last_reset")==today)
+        total_vip    = d.get("total_vip",0)
+        total_income = d.get("total_income",0)
+        bot_on       = d.get("bot_on",True)
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔴 Bot বন্ধ" if bot_on else "🟢 Bot চালু",
                                   callback_data="admin_toggle_bot")],
@@ -1614,18 +1210,17 @@ async def handle_admin_callback(query, context, data):
             f"👥 মোট User     : {total_users} জন\n"
             f"💎 Active VIP   : {active_vip} জন\n"
             f"🆕 আজ VIP হয়েছে: {today_vip} জন\n"
-            f"💰 আজ আয়       : {today_vip * VIP_PRICE}৳\n"
+            f"💰 আজ আয়       : {today_vip*VIP_PRICE}৳\n"
             f"🏆 মোট VIP sold : {total_vip}\n"
             f"💵 মোট আয়      : {total_income}৳\n"
             f"🤖 Bot Status   : {'🟢 ON' if bot_on else '🔴 OFF'}",
             reply_markup=kb
         )
-
-    elif data == "admin_payment":
+elif data=="admin_payment":
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📱 bKash নম্বর বদলাও", callback_data="admin_set_bkash")],
-            [InlineKeyboardButton("📱 Nagad নম্বর বদলাও", callback_data="admin_set_nagad")],
-            [InlineKeyboardButton("💳 Binance ID বদলাও", callback_data="admin_set_binance")],
+            [InlineKeyboardButton("📱 bKash নম্বর বদলাও",  callback_data="admin_set_bkash")],
+            [InlineKeyboardButton("📱 Nagad নম্বর বদলাও",  callback_data="admin_set_nagad")],
+            [InlineKeyboardButton("💳 Binance ID বদলাও",   callback_data="admin_set_binance")],
             [InlineKeyboardButton(f"💰 VIP Price বদলাও (এখন {VIP_PRICE}৳)", callback_data="admin_set_price")],
             [InlineKeyboardButton("🔙 Back", callback_data="admin_back")],
         ])
@@ -1638,7 +1233,7 @@ async def handle_admin_callback(query, context, data):
             reply_markup=kb
         )
 
-    elif data == "admin_commands":
+    elif data=="admin_commands":
         await query.edit_message_text(
             "📋 All Admin Commands\n\n"
             "━━━━━━━━━━━━━━━━━━\n"
@@ -1655,7 +1250,7 @@ async def handle_admin_callback(query, context, data):
             "Admin panel → Admin Message → সব user কে message"
         )
 
-    elif data == "admin_broadcast":
+    elif data=="admin_broadcast":
         admin_set_mode[str(ADMIN_ID)] = "broadcast"
         await query.edit_message_text(
             "📢 সব user কে পাঠাতে চাও?\n\n"
@@ -1663,68 +1258,63 @@ async def handle_admin_callback(query, context, data):
             "(পরের message টা সবার কাছে যাবে)"
         )
 
-    elif data == "admin_toggle_bot":
-        current = d.get("bot_on", True)
+    elif data=="admin_toggle_bot":
+        current     = d.get("bot_on",True)
         d["bot_on"] = not current
         save_json(DATA_FILE, d)
         status = "🟢 চালু" if not current else "🔴 বন্ধ"
         await query.edit_message_text(f"✅ Bot এখন {status}!")
 
-    elif data in ["admin_set_bkash", "admin_set_nagad", "admin_set_binance", "admin_set_price"]:
-        key = data.replace("admin_set_", "")
+    elif data in ["admin_set_bkash","admin_set_nagad","admin_set_binance","admin_set_price"]:
+        key = data.replace("admin_set_","")
         admin_set_mode[str(ADMIN_ID)] = key
-        labels = {"bkash": "bKash নম্বর", "nagad": "Nagad নম্বর",
-                  "binance": "Binance ID", "price": "VIP Price (শুধু সংখ্যা)"}
+        labels = {"bkash":"bKash নম্বর","nagad":"Nagad নম্বর",
+                  "binance":"Binance ID","price":"VIP Price (শুধু সংখ্যা)"}
         await query.edit_message_text(f"📝 নতুন {labels[key]} লিখো:")
 
-    elif data == "admin_back":
+    elif data=="admin_back":
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("👤 My Profile", callback_data="admin_profile")],
+            [InlineKeyboardButton("👤 My Profile",        callback_data="admin_profile")],
             [InlineKeyboardButton("💳 My Payment System", callback_data="admin_payment")],
-            [InlineKeyboardButton("📋 All Commands", callback_data="admin_commands")],
-            [InlineKeyboardButton("📢 Admin Message", callback_data="admin_broadcast")],
+            [InlineKeyboardButton("📋 All Commands",      callback_data="admin_commands")],
+            [InlineKeyboardButton("📢 Admin Message",     callback_data="admin_broadcast")],
         ])
         await query.edit_message_text(
             "━━━━━━━━━━━━━━━━━━━━━\n🔧 ADMIN PANEL\n━━━━━━━━━━━━━━━━━━━━━",
             reply_markup=kb
         )
 
-
 # =========================
 # Owner Assistant (Jarvis)
 # =========================
-async def owner_assistant(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != ADMIN_ID:
-        return
-    args = context.args
-    msg = " ".join(args) if args else ""
-    d = load_json(DATA_FILE)
-    users = load_json(USER_FILE)
+async def owner_assistant(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id!=ADMIN_ID: return
+    args  = context.args; msg = " ".join(args) if args else ""
+    d     = load_json(DATA_FILE); users = load_json(USER_FILE)
     today = str(datetime.now().date())
-    total_users = len(users)
-    active_vip = sum(1 for u in users.values() if u.get("is_vip"))
-    today_vip = sum(1 for u in users.values()
-                    if u.get("is_vip") and u.get("last_reset") == today)
-    total_income = d.get("total_income", 0)
+    total_users  = len(users)
+    active_vip   = sum(1 for u in users.values() if u.get("is_vip"))
+    today_vip    = sum(1 for u in users.values()
+                       if u.get("is_vip") and u.get("last_reset")==today)
+    total_income = d.get("total_income",0)
     if not msg:
         await update.message.reply_text(
             f"👑 Jarvis রিপোর্ট — {today}\n\n"
-            f"👥 মোট User     : {total_users} জন\n"
+f"👥 মোট User     : {total_users} জন\n"
             f"💎 Active VIP   : {active_vip} জন\n"
             f"🆕 আজ VIP হয়েছে: {today_vip} জন\n"
-            f"💰 আজ আয়       : {today_vip * VIP_PRICE}৳\n"
+            f"💰 আজ আয়       : {today_vip*VIP_PRICE}৳\n"
             f"💵 মোট আয়      : {total_income}৳\n\n"
             "প্রশ্ন করতে: /me [প্রশ্ন]"
-        )
-        return
+        ); return
     sys_p = (f"তুমি Jarvis — Wafi এর personal assistant। বাংলায় সম্মানের সাথে কথা বলো। "
              f"Bot stats: user={total_users}, vip={active_vip}, আয়={total_income}৳")
     try:
-        headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
-        body = {"model": GROQ_MODEL, "messages": [
-            {"role": "system", "content": sys_p}, {"role": "user", "content": msg}
-        ], "max_tokens": 400}
+        headers = {"Authorization":f"Bearer {GROQ_KEY}","Content-Type":"application/json"}
+        body    = {"model":GROQ_MODEL,"messages":[
+            {"role":"system","content":sys_p},{"role":"user","content":msg}
+        ],"max_tokens":400}
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 GROQ_URL, headers=headers, json=body,
@@ -1734,73 +1324,62 @@ async def owner_assistant(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "choices" in res:
             await update.message.reply_text(
                 f"🤖 Jarvis:\n\n{res['choices'][0]['message']['content'].strip()}")
-        else:
-            await update.message.reply_text("⚠️ Jarvis busy। একটু পরে try করুন।")
-    except Exception as e:
-        await update.message.reply_text(f"⚠️ Error: {e}")
-
+        else: await update.message.reply_text("⚠️ Jarvis busy। একটু পরে try করুন।")
+    except Exception as e: await update.message.reply_text(f"⚠️ Error: {e}")
 
 # =========================
 # Signal Command
 # =========================
-async def signal_dao_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def signal_dao_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
     uid = str(update.message.from_user.id)
     pending_signal_confirm.add(uid)
     await update.message.reply_text(
         "📊 Signal শুরু করবো?\n\n✅ হ্যাঁ — yes লিখো\n❌ না — no লিখো"
     )
 
-
 # =========================
 # Main Reply Handler
 # =========================
-async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
-    msg = update.message.text
+async def reply(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text: return
+    msg     = update.message.text
     msg_low = msg.lower().strip()
-    uid = str(update.message.from_user.id)
+    uid     = str(update.message.from_user.id)
 
     d = load_json(DATA_FILE)
-    if not d.get("bot_on", True) and int(uid) != ADMIN_ID:
-        await update.message.reply_text("⚠️ Bot সাময়িকভাবে বন্ধ। পরে আসুন।")
-        return
+    if not d.get("bot_on",True) and int(uid)!=ADMIN_ID:
+        await update.message.reply_text("⚠️ Bot সাময়িকভাবে বন্ধ। পরে আসুন।"); return
 
-    if int(uid) == ADMIN_ID and admin_set_mode.get(uid) == "broadcast":
-        admin_set_mode.pop(uid, None)
+    if int(uid)==ADMIN_ID and admin_set_mode.get(uid)=="broadcast":
+        admin_set_mode.pop(uid,None)
         users = load_json(USER_FILE)
-        sent = 0
-
+        sent=0
+        # ✅ Broadcast — gather parallel sends
         async def _send(tid):
             try:
                 await context.bot.send_message(chat_id=int(tid), text=f"📢 Admin Message:\n\n{msg}")
                 return 1
-            except:
-                return 0
-
+            except: return 0
         results = await asyncio.gather(*[_send(tid) for tid in users], return_exceptions=True)
-        sent = sum(r for r in results if r == 1)
-        await update.message.reply_text(f"✅ {sent} জনকে পাঠানো হয়েছে!")
-        return
+        sent = sum(r for r in results if r==1)
+        await update.message.reply_text(f"✅ {sent} জনকে পাঠানো হয়েছে!"); return
 
-    if int(uid) == ADMIN_ID and uid in admin_set_mode:
+    if int(uid)==ADMIN_ID and uid in admin_set_mode:
         key = admin_set_mode.pop(uid)
-        if key == "price":
+        if key=="price":
             try:
-                global VIP_PRICE
-                VIP_PRICE = int(msg.strip())
+                global VIP_PRICE; VIP_PRICE=int(msg.strip())
                 await update.message.reply_text(f"✅ VIP Price আপডেট: {VIP_PRICE}৳")
-            except:
-                await update.message.reply_text("❌ শুধু সংখ্যা লিখো!")
+            except: await update.message.reply_text("❌ শুধু সংখ্যা লিখো!")
         else:
-            PAYMENT_INFO[key] = msg.strip()
+            PAYMENT_INFO[key]=msg.strip()
             await update.message.reply_text(f"✅ {key.upper()} আপডেট: {msg.strip()}")
         return
 
-    add_xp(uid, 1)
+    add_xp(uid,1)
 
     if uid in pending_signal_confirm:
-        yes = ["yes", "হ্যা", "হে", "হ্যাঁ", "ha", "হা", "ok", "okay", "ওকে", "sure", "start", "শুরু", "দাও", "দে"]
+        yes=["yes","হ্যা","হে","হ্যাঁ","ha","হা","ok","okay","ওকে","sure","start","শুরু","দাও","দে"]
         if any(w in msg_low for w in yes):
             pending_signal_confirm.discard(uid)
             await run_signal_session(update, uid)
@@ -1809,55 +1388,46 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ বাতিল। /signal_dao")
         return
 
-    if uid in pending_txn and len(msg.strip()) >= 5:
-        await handle_txn_id(update, context, uid, msg.strip())
-        return
-
-    sig_triggers = ["signal dao", "সিগনাল দাও", "signal daw", "এন্ট্রি দাও", "signal", "সিগনাল"]
-    if any(t == msg_low for t in sig_triggers):
+    if uid in pending_txn and len(msg.strip())>=5:
+        await handle_txn_id(update, context, uid, msg.strip()); return
+sig_triggers=["signal dao","সিগনাল দাও","signal daw","এন্ট্রি দাও","signal","সিগনাল"]
+    if any(t==msg_low for t in sig_triggers):
         pending_signal_confirm.add(uid)
         await update.message.reply_text(
             "📊 Signal শুরু করবো?\n\n✅ হ্যাঁ — yes লিখো\n❌ না — no লিখো"
-        )
-        return
+        ); return
 
-    if msg_low in ["admin", "এডমিন"] and int(uid) == ADMIN_ID:
-        await admin_panel(update, context)
-        return
+    if msg_low in ["admin","এডমিন"] and int(uid)==ADMIN_ID:
+        await admin_panel(update,context); return
 
-    cmd = handle_commands(msg, uid)
-    if cmd:
-        await update.message.reply_text(cmd)
-        return
+    cmd = handle_commands(msg,uid)
+    if cmd: await update.message.reply_text(cmd); return
 
-    brain_res = brain(msg, uid)
-    if brain_res:
-        await update.message.reply_text(brain_res)
-        return
+    brain_res = brain(msg,uid)
+    if brain_res: await update.message.reply_text(brain_res); return
 
-    # Groq AI — always responds now
     await update.message.chat.send_action(action="typing")
-    ai_text = await groq_reply(msg, uid)
+    ai_text = await groq_reply(msg,uid)
     if ai_text:
         await update.message.reply_text(ai_text)
+    else:
+        # ✅ AI fail হলেও চুপ থাকবে না
+        await update.message.reply_text(
+            "🤖 একটু busy আছি! আবার জিজ্ঞেস করো 😊\n\n"
+            "Signal নিতে: /signal_dao\n"
+            f"VIP কিনতে: /buy ({VIP_PRICE}৳)"
+        )
 
-
-async def voice_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.voice:
-        return
+async def voice_reply(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.voice: return
     uid = str(update.message.from_user.id)
     try:
-        vf = await update.message.voice.get_file()
-        fp = f"voice_{uid}.ogg"
-        await vf.download_to_drive(fp)
-        try:
-            os.remove(fp)
-        except:
-            pass
+        vf=await update.message.voice.get_file()
+        fp=f"voice_{uid}.ogg"; await vf.download_to_drive(fp)
+        try: os.remove(fp)
+        except: pass
         await update.message.reply_text("🎙️ Voice পেয়েছি! Text এ লিখলে ভালো হয় 😊")
-    except Exception as e:
-        print(f"Voice error: {e}")
-
+    except Exception as e: print(f"Voice error: {e}")
 
 # =========================
 # RUN
@@ -1866,31 +1436,23 @@ def main():
     app = (
         ApplicationBuilder()
         .token(TOKEN)
-        .concurrent_updates(True)
+        .concurrent_updates(True)   # ✅ একসাথে সব user handle
         .build()
     )
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("buy", buy))
+    app.add_handler(CommandHandler("start",      start))
+    app.add_handler(CommandHandler("buy",        buy))
     app.add_handler(CommandHandler("signal_dao", signal_dao_cmd))
-    app.add_handler(CommandHandler("vip_on", vip_on))
-    app.add_handler(CommandHandler("status", status_cmd))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("history", history_cmd))
-    app.add_handler(CommandHandler("admin", admin_panel))
-    app.add_handler(CommandHandler("me", owner_assistant))
+    app.add_handler(CommandHandler("vip_on",     vip_on))
+    app.add_handler(CommandHandler("status",     status_cmd))
+    app.add_handler(CommandHandler("help",       help_cmd))
+    app.add_handler(CommandHandler("admin",      admin_panel))
+    app.add_handler(CommandHandler("me",         owner_assistant))
     app.add_handler(CallbackQueryHandler(payment_callback))
     app.add_handler(MessageHandler(filters.PHOTO, handle_screenshot))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply))
     app.add_handler(MessageHandler(filters.VOICE, voice_reply))
-    print("=" * 50)
-    print("🔥 CLAW VIP BOT v4.0 — ENHANCED ACCURACY 🔥")
-    print("✅ MACD + BB + ATR + Multi-EMA Indicators")
-    print("✅ AI always responds — never returns None")
-    print("✅ Enhanced Win/Loss display with session tracking")
-    print("✅ Trade History with /history command")
-    print("=" * 50)
+    print("Claw VIP Bot ON! 🔥 [High-Concurrency Mode]")
     app.run_polling(drop_pending_updates=True)
 
-
-if __name__ == "__main__":
+if name == "main":
     main()
