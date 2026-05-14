@@ -1,4 +1,3 @@
-> SW_:
 import logging
 import requests
 from datetime import datetime, timedelta
@@ -62,8 +61,6 @@ SERVICES = {
         "yt1": {"name": "ইউটিউব ১K Subscriber", "price": 170, "min": 100, "active": True, "search": "youtube subscriber", "avoid": ["view","like","comment"]},
         "yt2": {"name": "ইউটিউব ১K Like",       "price": 50,  "min": 100, "active": True, "search": "youtube like",       "avoid": ["sub","view","comment"]},
         "yt3": {"name": "ইউটিউব ১K View",       "price": 120, "min": 100, "active": True, "search": "youtube view",       "avoid": ["sub","like","comment"]},
-
-> SW_:
 "yt4": {"name": "ইউটিউব ১০০ Comment",   "price": 40,  "min": 100, "active": True, "search": "youtube comment",    "avoid": ["sub","like","view"]},
     }},
     "instagram": {"name": "📸 ইন্সটাগ্রাম", "active": True, "list": {
@@ -126,8 +123,6 @@ def find_best_id(search, avoid):
         return str(best.get("service")), float(best.get("rate", 0))
     except:
         return None, None
-
-> SW_:
 def find_by_name(query):
     try:
         if not SMM_CACHE:
@@ -240,8 +235,6 @@ async def process_order(context, uid, sdata, skey, qty, link):
     price = get_price(skey)
     cost = round((qty / 1000) * price, 2)
     sid, smm_rate = find_best_id(sdata["search"], sdata["avoid"])
-
-> SW_:
 actual_cost = 0.0
     if sid and smm_rate:
         smm_bdt = round(smm_rate * 110, 2)
@@ -332,8 +325,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return ConversationHandler.END
-
-> SW_:
 if uid == ADMIN_ID:
         usd, bdt = get_smm_balance()
         await update.message.reply_text(
@@ -440,8 +431,6 @@ async def select_platform(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=ReplyKeyboardMarkup(btns, resize_keyboard=True)
     )
     return S_SERVICE
-
-> SW_:
 async def select_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text == "🔙 ব্যাক করুন":
@@ -544,8 +533,6 @@ async def enter_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # ===== DEPOSIT =====
-
-> SW_:
 async def deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     methods = []
     if PAYMENT["bkash"]["active"]:
@@ -644,8 +631,6 @@ async def pay_method_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💎 Binance পেমেন্ট\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"💵 পরিমাণ: {amount:.0f} TK\n\n"
-
-> SW_:
 f"🆔 Binance Pay ID:\n"
             f"👉 {PAYMENT['binance']['id']}\n\n"
             f"✅ উপরের ID তে {amount:.0f} TK পাঠান।\n\n"
@@ -739,8 +724,6 @@ async def approve_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"💰 {amount:.0f} TK যোগ হয়েছে!\n"
                 f"💳 নতুন ব্যালেন্স: {u['balance']:.2f} TK\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-
-> SW_:
 f"এখন সার্ভিস অর্ডার করুন! 😊"
             )
         except:
@@ -839,8 +822,6 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"━━━━━━━━━━━━━━━━━━━━━━",
         reply_markup=admin_kb()
     )
-
-> SW_:
 async def my_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -928,8 +909,6 @@ async def payment_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🟠 Nagad: {ng} | {PAYMENT['nagad']['number']}\n"
         f"💎 Binance: {bn} | {PAYMENT['binance']['id']}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━",
-
-> SW_:
 reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔴 Bkash ON/OFF", callback_data="tog_bkash"),
              InlineKeyboardButton("🟠 Nagad ON/OFF", callback_data="tog_nagad")],
@@ -1006,8 +985,6 @@ async def block_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("বাতিল।", reply_markup=admin_kb())
         return ConversationHandler.END
     try:
-
-> SW_:
 uid = int(update.message.text)
         context.user_data["block_uid"] = uid
         u = users.get(uid, {})
@@ -1090,8 +1067,6 @@ async def refund_uid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         uid = int(update.message.text)
         if uid not in users:
-
-> SW_:
 await update.message.reply_text("❌ User পাওয়া যায়নি।")
             return REF_UID
         context.user_data["ref_uid"] = uid
@@ -1190,8 +1165,6 @@ async def ao_svc(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ao_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "❌ বাতিল করুন":
         await update.message.reply_text("বাতিল।", reply_markup=admin_kb())
-
-> SW_:
 return ConversationHandler.END
     try:
         qty = int(update.message.text)
@@ -1290,8 +1263,6 @@ async def today_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💸 খরচ: {td['cost']:.2f} TK\n🏆 লাভ: {td['profit']:.2f} TK",
         reply_markup=admin_kb()
     )
-
-> SW_:
 async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -1380,8 +1351,6 @@ async def service_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ '{query}' পাওয়া যায়নি।")
             return
         bdt = round(rate * 110, 2)
-
-> SW_:
 context.user_data["custom_sid"] = sid
         context.user_data["custom_name"] = name
         context.user_data["custom_rate"] = rate
@@ -1476,8 +1445,6 @@ async def fail_order_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "failrefund":
         u["balance"] += amount
         txt = (query.message.text or "") + f"\n\n✅ Refund দেওয়া হয়েছে — {amount:.2f} TK!"
-
-> SW_:
 await query.message.edit_text(txt)
         try:
             await context.bot.send_message(uid,
@@ -1555,3 +1522,61 @@ def main():
     )
     check_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^👤 Check User$"), check_user)],
+states={CHK_UID: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_user_id)]},
+        fallbacks=[CommandHandler("start", start), MessageHandler(cancel_filter, cancel)]
+    )
+    refund_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^💸 Refund User$"), refund_start)],
+        states={
+            REF_UID: [MessageHandler(filters.TEXT & ~filters.COMMAND, refund_uid_handler)],
+            REF_AMT: [MessageHandler(filters.TEXT & ~filters.COMMAND, refund_amt_handler)],
+        },
+        fallbacks=[CommandHandler("start", start), MessageHandler(cancel_filter, cancel)]
+    )
+    ao_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^🛒 Admin Order$"), admin_order_start)],
+        states={
+            AO_UID:  [MessageHandler(filters.TEXT & ~filters.COMMAND, ao_uid)],
+            AO_SVC:  [MessageHandler(filters.TEXT & ~filters.COMMAND, ao_svc)],
+            AO_QTY:  [MessageHandler(filters.TEXT & ~filters.COMMAND, ao_qty)],
+            AO_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, ao_link)],
+        },
+        fallbacks=[CommandHandler("start", start), MessageHandler(cancel_filter, cancel)]
+    )
+    custom_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^/service="), service_cmd)],
+        states={CUSTOM_SVC: [MessageHandler(filters.TEXT & ~filters.COMMAND, custom_svc_order)]},
+        fallbacks=[CommandHandler("start", start), MessageHandler(cancel_filter, cancel)]
+    )
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("price_up", price_up))
+    app.add_handler(CommandHandler("price_down", price_down))
+    app.add_handler(CommandHandler("today", today_cmd))
+    app.add_handler(CommandHandler("history", history_cmd))
+    app.add_handler(CommandHandler("toggle_svc", toggle_svc_cmd))
+    app.add_handler(CommandHandler("toggle_platform", toggle_platform_cmd))
+    app.add_handler(CommandHandler("protect", protect_cmd))
+    app.add_handler(buy_conv)
+    app.add_handler(dep_conv)
+    app.add_handler(bc_conv)
+    app.add_handler(block_conv)
+    app.add_handler(pay_conv)
+    app.add_handler(list_conv)
+    app.add_handler(check_conv)
+    app.add_handler(refund_conv)
+    app.add_handler(ao_conv)
+    app.add_handler(custom_conv)
+    app.add_handler(CallbackQueryHandler(verify_cb, pattern="^verify$"))
+    app.add_handler(CallbackQueryHandler(approve_cb, pattern="^(approve|reject)_"))
+    app.add_handler(CallbackQueryHandler(pay_settings_cb, pattern="^tog_"))
+    app.add_handler(CallbackQueryHandler(fail_order_cb, pattern="^(failrefund|failretry)_"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    print("✅ Bot চালু হয়েছে!")
+    app.run_polling(drop_pending_updates=True)
+
+if name == "main":
+    main()
+
+# This file has been patched
