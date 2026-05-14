@@ -1,34 +1,9 @@
+> SW_:
 import logging
 import requests
-import json,os
 from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters, ConversationHandler
-
-os.makedirs("/app/data",exist_ok=True)
-_F="/app/data/smm_data.json"
-def _save():
-    try:
-        b={}
-        for k,v in blocked.items(): b[str(k)]={"until":"permanent"} if v.get("until")=="permanent" else {"until":v["until"].isoformat()}
-        with open(_F+".tmp","w",encoding="utf-8") as f: json.dump({"users":{str(k):v for k,v in users.items()},"orders":{str(k):v for k,v in orders.items()},"blocked":b,"today_stats":today_stats,"total_stats":total_stats},f,ensure_ascii=False)
-        os.replace(_F+".tmp",_F)
-    except: pass
-def _load():
-    global users,orders,blocked,today_stats,total_stats
-    if not os.path.exists(_F): return
-    try:
-        d=json.load(open(_F,encoding="utf-8"))
-        users={int(k):v for k,v in d.get("users",{}).items()}
-        orders={int(k):v for k,v in d.get("orders",{}).items()}
-        for k,v in d.get("blocked",{}).items():
-            uid=int(k)
-            if v.get("until")=="permanent": blocked[uid]={"until":"permanent"}
-            else:
-                try: blocked[uid]={"until":datetime.fromisoformat(v["until"])}
-                except: pass
-        today_stats.update(d.get("today_stats",{})); total_stats.update(d.get("total_stats",total_stats))
-    except: pass
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -38,8 +13,8 @@ ADMIN_ID = 7974704580
 BOT_NAME = "FREE SERVICE SMM FATHER"
 OWNER = "@SW_WAFK"
 SUPPORT = "@SOPPORT_CLAW_BOT"
-API_KEY = "fe29a2d45e4ce8242de222144cf20e1a"
-API_URL = "https://peakerr.com/api/v2"
+API_KEY = "74217ee4b8821adef13d3f3cf52806f0"
+API_URL = "https://smmhid.com/api/v2"
 CHANNEL_1 = "@SMM_SERVICES_BANGLADESH"
 CHANNEL_2 = "@jjSERVICE_SMM_FATHER"
 LOG_CH = "@jjSERVICE_SMM_FATHER"
@@ -87,7 +62,9 @@ SERVICES = {
         "yt1": {"name": "ইউটিউব ১K Subscriber", "price": 170, "min": 100, "active": True, "search": "youtube subscriber", "avoid": ["view","like","comment"]},
         "yt2": {"name": "ইউটিউব ১K Like",       "price": 50,  "min": 100, "active": True, "search": "youtube like",       "avoid": ["sub","view","comment"]},
         "yt3": {"name": "ইউটিউব ১K View",       "price": 120, "min": 100, "active": True, "search": "youtube view",       "avoid": ["sub","like","comment"]},
-        "yt4": {"name": "ইউটিউব ১০০ Comment",   "price": 40,  "min": 100, "active": True, "search": "youtube comment",    "avoid": ["sub","like","view"]},
+
+> SW_:
+"yt4": {"name": "ইউটিউব ১০০ Comment",   "price": 40,  "min": 100, "active": True, "search": "youtube comment",    "avoid": ["sub","like","view"]},
     }},
     "instagram": {"name": "📸 ইন্সটাগ্রাম", "active": True, "list": {
         "ig1": {"name": "ইন্সটাগ্রাম ১K Follower", "price": 180, "min": 100,   "active": True, "search": "instagram follower",  "avoid": ["view","like","comment"]},
@@ -121,7 +98,7 @@ def get_smm_services():
     except:
         return []
 
-def get_peakerr_balance():
+def get_smm_balance():
     try:
         r = requests.post(API_URL, data={"key": API_KEY, "action": "balance"}, timeout=10)
         data = r.json()
@@ -150,6 +127,7 @@ def find_best_id(search, avoid):
     except:
         return None, None
 
+> SW_:
 def find_by_name(query):
     try:
         if not SMM_CACHE:
@@ -227,7 +205,6 @@ def update_stats(rev, cost):
     total_stats["revenue"] += rev
     total_stats["cost"] += cost
     total_stats["profit"] += rev - cost
-    _save()
 
 def main_kb():
     return ReplyKeyboardMarkup([
@@ -263,7 +240,9 @@ async def process_order(context, uid, sdata, skey, qty, link):
     price = get_price(skey)
     cost = round((qty / 1000) * price, 2)
     sid, smm_rate = find_best_id(sdata["search"], sdata["avoid"])
-    actual_cost = 0.0
+
+> SW_:
+actual_cost = 0.0
     if sid and smm_rate:
         smm_bdt = round(smm_rate * 110, 2)
         if smm_bdt > price:
@@ -354,8 +333,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
-    if uid == ADMIN_ID:
-        usd, bdt = get_peakerr_balance()
+> SW_:
+if uid == ADMIN_ID:
+        usd, bdt = get_smm_balance()
         await update.message.reply_text(
             f"⭐ ADMIN DASHBOARD ⭐\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -364,7 +344,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📦 মোট অর্ডার: {len(orders)} টি\n"
             f"🏆 মোট লাভ: {total_stats['profit']:.2f} TK\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"💎 Peakerr Balance:\n"
+            f"💎 SMM Balance:\n"
             f"   ${usd:.2f} = {bdt:.2f} TK\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🤖 বট: {'✅ চালু' if bot_on else '❌ বন্ধ'}\n"
@@ -461,6 +441,7 @@ async def select_platform(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return S_SERVICE
 
+> SW_:
 async def select_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text == "🔙 ব্যাক করুন":
@@ -563,6 +544,8 @@ async def enter_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # ===== DEPOSIT =====
+
+> SW_:
 async def deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     methods = []
     if PAYMENT["bkash"]["active"]:
@@ -661,7 +644,9 @@ async def pay_method_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💎 Binance পেমেন্ট\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"💵 পরিমাণ: {amount:.0f} TK\n\n"
-            f"🆔 Binance Pay ID:\n"
+
+> SW_:
+f"🆔 Binance Pay ID:\n"
             f"👉 {PAYMENT['binance']['id']}\n\n"
             f"✅ উপরের ID তে {amount:.0f} TK পাঠান।\n\n"
             f"📸 পেমেন্টের স্ক্রিনশট পাঠান:",
@@ -741,7 +726,7 @@ async def approve_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action, uid, amount = parts[0], int(parts[1]), float(parts[2])
     u = get_user(uid)
     if action == "approve":
-        u["balance"] += amount; _save()
+        u["balance"] += amount
         txt = (query.message.caption or query.message.text or "") + f"\n\n✅ APPROVED — {amount:.0f} TK যোগ!"
         try:
             await query.message.edit_caption(txt)
@@ -754,7 +739,9 @@ async def approve_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"💰 {amount:.0f} TK যোগ হয়েছে!\n"
                 f"💳 নতুন ব্যালেন্স: {u['balance']:.2f} TK\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"এখন সার্ভিস অর্ডার করুন! 😊"
+
+> SW_:
+f"এখন সার্ভিস অর্ডার করুন! 😊"
             )
         except:
             pass
@@ -839,7 +826,7 @@ async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    usd, bdt = get_peakerr_balance()
+    usd, bdt = get_smm_balance()
     await update.message.reply_text(
         f"📊 STATISTICS\n━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👥 ইউজার: {len(users)} জন\n"
@@ -848,17 +835,18 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💸 SMM খরচ: {total_stats['cost']:.2f} TK\n"
         f"🏆 মোট লাভ: {total_stats['profit']:.2f} TK\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💎 Peakerr Balance: ${usd:.2f} = {bdt:.2f} TK\n"
+        f"💎 SMM Balance: ${usd:.2f} = {bdt:.2f} TK\n"
         f"━━━━━━━━━━━━━━━━━━━━━━",
         reply_markup=admin_kb()
     )
 
+> SW_:
 async def my_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     today = datetime.now().strftime("%Y-%m-%d")
     td = today_stats.get(today, {"orders":0,"revenue":0,"cost":0,"profit":0})
-    usd, bdt = get_peakerr_balance()
+    usd, bdt = get_smm_balance()
     await update.message.reply_text(
         f"💎 MY PROFIT DASHBOARD 💎\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -874,7 +862,7 @@ async def my_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💸 {total_stats['cost']:.2f} TK খরচ\n"
         f"🏆 {total_stats['profit']:.2f} TK লাভ\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💎 Peakerr Balance: ${usd:.2f} = {bdt:.2f} TK\n"
+        f"💎 SMM Balance: ${usd:.2f} = {bdt:.2f} TK\n"
         f"━━━━━━━━━━━━━━━━━━━━━━",
         reply_markup=admin_kb()
     )
@@ -882,9 +870,9 @@ async def my_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def smm_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    await update.message.reply_text("⏳ Peakerr থেকে দাম আনছি...")
+    await update.message.reply_text("⏳ SMM থেকে দাম আনছি...")
     get_smm_services()
-    msg = "💹 PEAKERR REAL PRICE (BDT)\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    msg = "💹 SMM REAL PRICE (BDT)\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
     for pk, pv in SERVICES.items():
         msg += f"{pv['name']}:\n"
         for sk, sv in pv["list"].items():
@@ -894,7 +882,7 @@ async def smm_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 bdt = round(rate * 110, 2)
                 profit = round(price - bdt, 2)
                 e = "✅" if profit > 0 else "❌"
-                msg += f"{e} {sv['name']}:\n   তোমার={price} | Peakerr={bdt} | লাভ={profit} TK\n"
+                msg += f"{e} {sv['name']}:\n   তোমার={price} | SMM={bdt} | লাভ={profit} TK\n"
             else:
                 msg += f"⚠️ {sv['name']}: ID পাওয়া যায়নি\n"
         msg += "\n"
@@ -909,7 +897,7 @@ async def all_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• /price_up 20 → সব দাম 20% বাড়াও\n"
         f"• /price_down 10 → সব দাম 10% কমাও\n"
         f"• /list → নিজে দাম সেট করো\n"
-        f"• /protect → Peakerr দাম বাড়লে অটো আপডেট\n\n"
+        f"• /protect → SMM দাম বাড়লে অটো আপডেট\n\n"
         f"📊 রিপোর্ট:\n"
         f"• /today → আজকের বিক্রি ও লাভ\n"
         f"• /history → অর্ডার হিস্ট্রি\n\n"
@@ -940,7 +928,9 @@ async def payment_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🟠 Nagad: {ng} | {PAYMENT['nagad']['number']}\n"
         f"💎 Binance: {bn} | {PAYMENT['binance']['id']}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━",
-        reply_markup=InlineKeyboardMarkup([
+
+> SW_:
+reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔴 Bkash ON/OFF", callback_data="tog_bkash"),
              InlineKeyboardButton("🟠 Nagad ON/OFF", callback_data="tog_nagad")],
             [InlineKeyboardButton("💎 Binance ON/OFF", callback_data="tog_binance")],
@@ -1016,7 +1006,9 @@ async def block_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("বাতিল।", reply_markup=admin_kb())
         return ConversationHandler.END
     try:
-        uid = int(update.message.text)
+
+> SW_:
+uid = int(update.message.text)
         context.user_data["block_uid"] = uid
         u = users.get(uid, {})
         name = u.get("name", "Unknown")
@@ -1098,7 +1090,9 @@ async def refund_uid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         uid = int(update.message.text)
         if uid not in users:
-            await update.message.reply_text("❌ User পাওয়া যায়নি।")
+
+> SW_:
+await update.message.reply_text("❌ User পাওয়া যায়নি।")
             return REF_UID
         context.user_data["ref_uid"] = uid
         u = users[uid]
@@ -1119,7 +1113,7 @@ async def refund_amt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         amount = float(update.message.text)
         uid = context.user_data.get("ref_uid")
         u = get_user(uid)
-        u["balance"] += amount; _save()
+        u["balance"] += amount
         await update.message.reply_text(
             f"✅ Refund সফল!\n👤 {u['name']} কে {amount:.0f} TK দেওয়া হয়েছে!\n💳 নতুন ব্যালেন্স: {u['balance']:.2f} TK",
             reply_markup=admin_kb()
@@ -1196,7 +1190,9 @@ async def ao_svc(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ao_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "❌ বাতিল করুন":
         await update.message.reply_text("বাতিল।", reply_markup=admin_kb())
-        return ConversationHandler.END
+
+> SW_:
+return ConversationHandler.END
     try:
         qty = int(update.message.text)
         sdata = context.user_data["ao_sdata"]
@@ -1295,6 +1291,7 @@ async def today_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=admin_kb()
     )
 
+> SW_:
 async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -1383,7 +1380,9 @@ async def service_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ '{query}' পাওয়া যায়নি।")
             return
         bdt = round(rate * 110, 2)
-        context.user_data["custom_sid"] = sid
+
+> SW_:
+context.user_data["custom_sid"] = sid
         context.user_data["custom_name"] = name
         context.user_data["custom_rate"] = rate
         await update.message.reply_text(
@@ -1475,9 +1474,11 @@ async def fail_order_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amount = float(parts[2])
     u = get_user(uid)
     if action == "failrefund":
-        u["balance"] += amount; _save()
+        u["balance"] += amount
         txt = (query.message.text or "") + f"\n\n✅ Refund দেওয়া হয়েছে — {amount:.2f} TK!"
-        await query.message.edit_text(txt)
+
+> SW_:
+await query.message.edit_text(txt)
         try:
             await context.bot.send_message(uid,
                 f"💰 আপনার অর্ডারটি সম্পন্ন হয়নি।\n"
@@ -1501,7 +1502,6 @@ async def fail_order_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 def main():
-    _load()
     app = Application.builder().token(BOT_TOKEN).build()
 
     cancel_filter = filters.Regex("^❌ বাতিল করুন$")
@@ -1555,61 +1555,3 @@ def main():
     )
     check_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^👤 Check User$"), check_user)],
-        states={CHK_UID: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_user_id)]},
-        fallbacks=[CommandHandler("start", start), MessageHandler(cancel_filter, cancel)]
-    )
-    refund_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^💸 Refund User$"), refund_start)],
-        states={
-            REF_UID: [MessageHandler(filters.TEXT & ~filters.COMMAND, refund_uid_handler)],
-            REF_AMT: [MessageHandler(filters.TEXT & ~filters.COMMAND, refund_amt_handler)],
-        },
-        fallbacks=[CommandHandler("start", start), MessageHandler(cancel_filter, cancel)]
-    )
-    ao_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^🛒 Admin Order$"), admin_order_start)],
-        states={
-            AO_UID:  [MessageHandler(filters.TEXT & ~filters.COMMAND, ao_uid)],
-            AO_SVC:  [MessageHandler(filters.TEXT & ~filters.COMMAND, ao_svc)],
-            AO_QTY:  [MessageHandler(filters.TEXT & ~filters.COMMAND, ao_qty)],
-            AO_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, ao_link)],
-        },
-        fallbacks=[CommandHandler("start", start), MessageHandler(cancel_filter, cancel)]
-    )
-    custom_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^/service="), service_cmd)],
-        states={CUSTOM_SVC: [MessageHandler(filters.TEXT & ~filters.COMMAND, custom_svc_order)]},
-        fallbacks=[CommandHandler("start", start), MessageHandler(cancel_filter, cancel)]
-    )
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("price_up", price_up))
-    app.add_handler(CommandHandler("price_down", price_down))
-    app.add_handler(CommandHandler("today", today_cmd))
-    app.add_handler(CommandHandler("history", history_cmd))
-    app.add_handler(CommandHandler("toggle_svc", toggle_svc_cmd))
-    app.add_handler(CommandHandler("toggle_platform", toggle_platform_cmd))
-    app.add_handler(CommandHandler("protect", protect_cmd))
-    app.add_handler(buy_conv)
-    app.add_handler(dep_conv)
-    app.add_handler(bc_conv)
-    app.add_handler(block_conv)
-    app.add_handler(pay_conv)
-    app.add_handler(list_conv)
-    app.add_handler(check_conv)
-    app.add_handler(refund_conv)
-    app.add_handler(ao_conv)
-    app.add_handler(custom_conv)
-    app.add_handler(CallbackQueryHandler(verify_cb, pattern="^verify$"))
-    app.add_handler(CallbackQueryHandler(approve_cb, pattern="^(approve|reject)_"))
-    app.add_handler(CallbackQueryHandler(pay_settings_cb, pattern="^tog_"))
-    app.add_handler(CallbackQueryHandler(fail_order_cb, pattern="^(failrefund|failretry)_"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-
-    print("✅ Bot চালু হয়েছে!")
-    app.run_polling(drop_pending_updates=True)
-
-if __name__ == "__main__":
-    main()
-
-# This file has been patched
