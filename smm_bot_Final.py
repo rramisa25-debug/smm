@@ -7,7 +7,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 logging.basicConfig(level=logging.WARNING)
 
 # ===== CONFIG =====
-BOT_TOKEN = "8652759001:AAHciYKNOamRiqq6RsMqoRqmMJ7zPKf7geY"
+BOT_TOKEN = "8652759001:AAGc9Ulh8JdhLAw35nra-d_vplLNTWgEFlk"
 ADMIN_ID = 7974704580
 BOT_NAME = "FREE SERVICE SMM FATHER"
 OWNER = "@SW_WAFK"
